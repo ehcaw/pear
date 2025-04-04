@@ -1,0 +1,5 @@
+supabase rust library: https://docs.rs/suparust/latest/suparust/
+
+text embeddings for supabases:
+
+https://supabase.com/docs/guides/ai/quickstarts/generate-text-embeddings
