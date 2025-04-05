@@ -1,5 +1,6 @@
 use directories::ProjectDirs;
 use hound::{SampleFormat, WavSpec, WavWriter};
+use serde_json::{json, Value};
 use std::cmp::{max, min};
 use std::env;
 use std::f32::consts::PI;
@@ -20,12 +21,13 @@ use tauri::{command, AppHandle, Runtime, Window};
 
 use groq_api_rust::{
     ChatCompletionMessage, ChatCompletionRequest, ChatCompletionRoles, GroqClient,
-    SpeechToTextRequest,
+    SpeechToTextRequest, TextToSpeechRequest,
 };
 
 fn get_app_data_dir() -> Result<PathBuf, String> {
     if let Some(proj_dirs) = ProjectDirs::from("com", "ehcaw", "pear") {
-        // Get the data directory path
+        // Get the data direc
+        // tory path
         let data_dir = proj_dirs.data_dir();
 
         fs::create_dir_all(data_dir)
@@ -94,8 +96,7 @@ fn process_audio(audio: Vec<f32>) -> Result<Vec<u8>, Box<dyn std::error::Error>>
     Ok(buffer)
 }
 
-#[tauri::command]
-pub fn transcribe(audio: Vec<f32>) -> Result<String, String> {
+fn transcribe(audio: Vec<f32>) -> Result<String, String> {
     // No need for a separate runtime or block_on
 
     println!("Processing audio..."); // Log progress
@@ -132,4 +133,92 @@ pub fn transcribe(audio: Vec<f32>) -> Result<String, String> {
             Err(format!("Failed to get response from Groq: {}", e))
         }
     }
+}
+
+fn get_llm_response(transcription: &String) -> Result<String, String> {
+    let messages = vec![ChatCompletionMessage {
+        role: ChatCompletionRoles::User,
+        content: transcription.to_string(),
+        name: None,
+    }];
+    let request = ChatCompletionRequest::new("meta-llama/llama-4-scout-17b-16e-instruct", messages);
+    let client = get_client();
+    let response = client.chat_completion(request);
+    match response {
+        Ok(response) => {
+            // Safely get the first choice
+            if let Some(choice) = response.choices.get(0) {
+                // Return the content, cloning it to return an owned String
+                Ok(choice.message.content.clone())
+            } else {
+                // Handle the unlikely case where there are no choices in a success response
+                Err("LLM response contained no choices.".to_string())
+            }
+        }
+        Err(e) => {
+            // Handle the error from the API call properly
+            Err(format!("Error getting llm response: {}", e))
+        }
+    }
+}
+fn text_to_speech(text: &String) -> Result<String, String> {
+    // Get client
+    let client = get_client();
+
+    // Create request
+    let request = TextToSpeechRequest::new(
+        Some("playai-tts".to_string()),
+        &text,
+        Some("Chip-PlayAI".to_string()),
+        Some(1.0),
+    );
+
+    // Send request to Groq API
+    let response = client.text_to_speech(request);
+
+    match response {
+        Ok(response) => {
+            // Get app data directory
+            let app_data_dir = get_app_data_dir()
+                .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+
+            // Create a unique filename based on timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("Time error: {}", e))?
+                .as_millis();
+
+            // Create audio file path with .mp3 extension (adjust if Groq uses a different format)
+            let file_path = app_data_dir.join(format!("tts_{}.mp3", timestamp));
+
+            // Write the audio data to the file
+            fs::write(&file_path, response.audio_data)
+                .map_err(|e| format!("Failed to write audio file: {}", e))?;
+
+            // Return the path as a string
+            Ok(file_path.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            // Handle the error from the API call properly
+            Err(format!("Error getting text-to-speech response: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub fn transcribe_generate_play(audio: Vec<f32>) -> Result<String, String> {
+    let transcription = transcribe(audio).unwrap();
+    let llm_response = get_llm_response(&transcription).unwrap();
+    let tts_audio_path = text_to_speech(&llm_response).unwrap();
+    let result = json!({
+        "audio_path": tts_audio_path,
+        "transcription": transcription,
+        "llm_response": llm_response
+    });
+    Ok(result.to_string())
+}
+
+#[tauri::command]
+pub fn delete_audio_file(path: String) -> Result<(), String> {
+    fs::remove_file(path).map_err(|e| format!("Failed to delete audio file: {}", e))
 }

@@ -11,20 +11,24 @@ import { useConversation } from "@/hooks/use-conversation";
 import { PearLogo } from "@/components/pear-logo";
 import { WaveBackground } from "@/components/wave-background";
 import { CodeSnippet } from "@/components/code-snippet";
+import { useMicVAD } from "@ricky0123/vad-react";
 
 export default function PearInterface() {
   const {
     messages,
-    isListening,
-    isSpeaking,
-    startListening,
-    stopListening,
-    toggleMute,
+    isDetectingSpeech,
+    isUserCurrentlySpeaking,
+    isProcessing,
+    isSpeaking, // AI speaking state
     isMuted,
-    currentTranscription,
-    clearConversation,
     codeSnippets,
-    handleUserMessage,
+    startSpeechDetection,
+    stopSpeechDetection,
+    // Expose handlers if they need to be called externally (e.g., from event listeners setup elsewhere)
+    handleSpeechStart,
+    handleSpeechEnd,
+    toggleMute,
+    clearConversation,
   } = useConversation();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -35,6 +39,23 @@ export default function PearInterface() {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages]);
+
+  const vad = useMicVAD({
+    startOnLoad: true,
+    onSpeechEnd: async (audio) => {
+      console.log(`User stopped speaking, ${audio}`);
+      await handleSpeechEnd(audio);
+    },
+  });
+
+  useEffect(() => {
+    if (!isMuted) {
+      vad.start();
+    }
+    if (isMuted) {
+      vad.pause();
+    }
+  }, [isMuted]);
 
   return (
     <div className="flex flex-col h-screen bg-cream-50 dark:bg-gray-950 overflow-hidden">
@@ -127,16 +148,7 @@ export default function PearInterface() {
                       isLast={index === messages.length - 1 && isSpeaking}
                     />
                   ))}
-                  {currentTranscription && (
-                    <ConversationBubble
-                      message={{
-                        role: "user",
-                        content: currentTranscription,
-                        pending: true,
-                      }}
-                      isLast={false}
-                    />
-                  )}
+
                   <div ref={messagesEndRef} />
                 </div>
               )}
@@ -145,12 +157,21 @@ export default function PearInterface() {
             <Card className="mt-4 border-zed-200 dark:border-zed-800 bg-white/80 backdrop-blur-sm dark:bg-gray-800/80">
               <CardContent className="p-4">
                 <VoiceControls
-                  isListening={isListening}
-                  isSpeaking={isSpeaking}
+                  isDetectingSpeech={isDetectingSpeech}
+                  isUserCurrentlySpeaking={isUserCurrentlySpeaking}
+                  isProcessing={isProcessing}
+                  isAssistantSpeaking={isSpeaking} // Pass AI speaking state separately if needed
                   isMuted={isMuted}
-                  onStartListening={startListening}
-                  onStopListening={stopListening}
+                  onToggleSpeechDetection={
+                    isDetectingSpeech
+                      ? stopSpeechDetection
+                      : startSpeechDetection
+                  }
                   onToggleMute={toggleMute}
+                  onTextSubmit={() => console.log("hello")}
+                  // Note: handleSpeechStart/End are typically triggered by backend events,
+                  // but passed here if VoiceControls needs direct access for UI feedback.
+                  // Depending on VoiceControls implementation, these might not be needed here.
                 />
               </CardContent>
             </Card>
