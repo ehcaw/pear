@@ -1,15 +1,11 @@
 use directories::ProjectDirs;
-use hound::{SampleFormat, WavSpec, WavWriter};
-use serde_json::{json, Value};
-use std::cmp::{max, min};
+use hound::{SampleFormat, WavSpec};
+use serde_json::json;
 use std::env;
-use std::f32::consts::PI;
 use std::fs;
 use std::io::Cursor;
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use tempfile::Builder; // Added missing import
 
 use curl::easy::Easy;
 use futures::Future;
