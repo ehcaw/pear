@@ -3,6 +3,7 @@
 mod ai;
 mod audio;
 mod file;
+mod langchain;
 mod supabase;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf}; // Import Match type
 use ai::transcribe_generate_play;
 use audio::{is_audio_playing, pause_audio, play_audio_file, resume_audio, stop_audio};
 use file::{embed_codebase, read_directory_structure, read_file};
+use langchain::chain_test;
 use supabase::query_document;
 
 #[tauri::command]
@@ -37,7 +39,8 @@ pub fn run() {
             read_file,
             read_directory_structure,
             embed_codebase,
-            query_document
+            query_document,
+            chain_test
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

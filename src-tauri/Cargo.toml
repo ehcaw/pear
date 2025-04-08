@@ -45,3 +45,6 @@ postgrest = "1.0"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 uuid = "1.16.0"
+langchain-rust = { version = "4.6.0", features = ["postgres"] }
+async-openai = "0.28.0"
+secrecy = "0.10.3"

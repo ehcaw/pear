@@ -172,7 +172,6 @@ pub async fn query_document(query: String, directory: String) -> Result<Value, S
             let embedding_str = serde_json::to_string(embedding)
                 .map_err(|e| format!("Failed to serialize embedding: {}", e))?;
 
-            // Execute the RPC call
             let result = client
                 .rpc(
                     "query_files",

@@ -7,14 +7,6 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use curl::easy::Easy;
-use futures::Future;
-use tokio_core::reactor::Core;
-use tokio_curl::Session;
-
-use tauri::async_runtime;
-use tauri::{command, AppHandle, Runtime, Window};
-
 use groq_api_rust::{
     ChatCompletionMessage, ChatCompletionRequest, ChatCompletionRoles, GroqClient,
     SpeechToTextRequest, TextToSpeechRequest,
