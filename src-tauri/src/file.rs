@@ -6,6 +6,13 @@ use serde_json::{from_str, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use futures::future::join_all;
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::sync::{mpsc as std_mpsc, Arc};
+use std::time::Duration;
+use tokio::sync::mpsc as tokio_mpsc;
+
+use crate::cache;
 use crate::supabase;
 // Keep TreeCursor import if needed elsewhere, otherwise remove. Removing for now.
 
@@ -200,6 +207,42 @@ async fn embed_file_data(file_data: &CodeChunk) {
     }
 }
 
+pub async fn embed_single_file(file_path: &str) -> Result<(), String> {
+    let path = Path::new(file_path);
+    if path.is_file() {
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                if content.chars().any(|c| c == '\0') {
+                    return Err("Likely binary file".to_string());
+                }
+                if content.len() > 5_000_000 {
+                    return Err("File contents too long to embed".to_string());
+                }
+                if content.is_empty() {
+                    return Err("Empty file".to_string());
+                }
+                let file_name = path.file_name().map_or_else(
+                    || "unknown_file".to_string(),
+                    |n| n.to_str().unwrap_or("invalid_filename").to_string(),
+                );
+                let file_chunk = CodeChunk {
+                    file_path: path.to_string_lossy().to_string(),
+                    name: file_name,
+                    chunk_type: "file".to_string(),
+                    content: content.clone(),
+                    start_line: 1,
+                    end_line: content.lines().count().max(1),
+                };
+                embed_file_data(&file_chunk);
+            }
+            Err(e) => {
+                (eprintln!("Error reading file {}: {}", path.display(), e));
+            }
+        }
+    }
+    Ok(())
+}
+
 // --- embed_codebase remains async and calls embed_file_data.await ---
 #[tauri::command]
 pub async fn embed_codebase(dir_path_str: String) -> Result<String, String> {
@@ -289,9 +332,34 @@ pub async fn embed_codebase(dir_path_str: String) -> Result<String, String> {
     // --- Embedding Step (Asynchronous) ---
     println!("Starting embedding of {} files...", total_files);
 
+    let (sender, mut receiver) = tokio_mpsc::channel(100); // Buffer size of 100
+    let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
+
     for file_data in files_to_embed {
         embed_file_data(&file_data).await; // Calls the async embed_file_data
     }
+    drop(sender);
+
+    let num_workers = 10;
+    let mut handles = Vec::new();
+    for _ in 0..num_workers {
+        let receiver_clone = receiver.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let file = {
+                    let mut receiver = receiver_clone.lock().await;
+                    match receiver.recv().await {
+                        Some(file) => file,
+                        None => break,
+                    }
+                };
+                embed_file_data(&file).await;
+            }
+        });
+        handles.push(handle);
+    }
+
+    join_all(handles).await;
 
     println!("Embedding process completed.");
 
@@ -301,4 +369,43 @@ pub async fn embed_codebase(dir_path_str: String) -> Result<String, String> {
         total_files,
         errors.len()
     ))
+}
+
+pub async fn watch_directory(dir_path: &str) -> Result<(), String> {
+    let path = Path::new(dir_path);
+    let (tx, rx) = std_mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            if let Ok(event) = res {
+                tx.send(event)
+                    .unwrap_or_else(|e| eprintln!("Error sending event : {}", e))
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|e| format!("Failed to create watcher : {}", e))?;
+    watcher
+        .watch(path, RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to watch path: {}", e))?;
+    let content_cache = cache::get_db_content_cache();
+    for event in rx {
+        let paths = event.paths;
+        match event.kind {
+            EventKind::Create(_) => {
+                for path in paths {
+                    embed_single_file(path.to_str().unwrap()).await;
+                }
+            }
+            EventKind::Modify(_) => {
+                // Handle file/directory modification
+                println!("Modified: {:?}", paths);
+            }
+            EventKind::Remove(_) => {
+                // Handle file/directory deletion
+                println!("Removed: {:?}", paths);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

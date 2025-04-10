@@ -2,6 +2,7 @@
 //
 mod ai;
 mod audio;
+mod cache;
 mod file;
 mod langchain;
 mod supabase;

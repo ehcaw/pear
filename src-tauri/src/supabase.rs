@@ -155,7 +155,7 @@ pub async fn insert_embedding(
 }
 
 #[tauri::command]
-pub async fn query_document(query: String, directory: String) -> Result<Value, String> {
+pub async fn query_document(query: String, directory: String, num: u8) -> Result<Value, String> {
     let client = get_client();
     match call_embedding_function_async(&query).await {
         Ok(response) => {
@@ -176,8 +176,8 @@ pub async fn query_document(query: String, directory: String) -> Result<Value, S
                 .rpc(
                     "query_files",
                     format!(
-                        "{{\"file_directory\": \"{}\", \"query_embedding\": {}}}",
-                        directory, embedding_str
+                        "{{\"file_directory\": \"{}\", \"query_embedding\": {}, \"num\": {}}}",
+                        directory, embedding_str, num
                     ),
                 )
                 .execute()
