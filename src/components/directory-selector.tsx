@@ -2,34 +2,53 @@
 
 import { Button } from "./ui/button";
 import { FolderOpen, RefreshCw } from "lucide-react";
-// Keep tauri imports if used here, or move logic to App.tsx if preferred
-import { open } from "@tauri-apps/plugin-dialog";
-import { homeDir } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-dialog"; // Import the 'open' function
+import { homeDir } from "@tauri-apps/api/path"; // Import homeDir for default path
 
 interface DirectorySelectorProps {
   selectedDirectory: string | null;
-  // NEW: Function to *initiate* the directory selection process
-  onSelectDirectoryClick: () => Promise<void>;
-  // NEW: Function to trigger a refresh of the current directory
+  // NEW: Callback function when a directory IS selected
+  onDirectorySelected: (path: string | null) => void;
   onRefreshDirectoryClick: () => void;
   isLoading?: boolean;
 }
 
 export function DirectorySelector({
   selectedDirectory,
-  onSelectDirectoryClick, // Use the new prop name
-  onRefreshDirectoryClick, // Use the new prop name
+  onDirectorySelected, // Use the new callback
+  onRefreshDirectoryClick,
   isLoading = false,
 }: DirectorySelectorProps) {
-  // The handleSelectDirectory logic is now primarily managed by the parent via onSelectDirectoryClick
-  // The refresh logic is now primarily managed by the parent via onRefreshDirectoryClick
+  // Function to handle the directory selection using the frontend API
+  const handleSelectDirectory = async () => {
+    try {
+      const defaultPath = await homeDir();
+      const result = await open({
+        directory: true, // Specify we want to select a directory
+        multiple: false, // Only allow selecting one directory
+        defaultPath: defaultPath, // Start in the user's home directory
+      });
+
+      if (typeof result === "string") {
+        // User selected a directory
+        onDirectorySelected(result);
+      } else {
+        // User cancelled or selected nothing
+        onDirectorySelected(null); // Or maybe don't call it if cancelled? Depends on desired behavior.
+      }
+    } catch (error) {
+      console.error("Error opening directory dialog:", error);
+      // Optionally, notify the parent or show an error message
+      onDirectorySelected(null);
+    }
+  };
 
   return (
     <div className="space-y-3">
       <div className="flex flex-col sm:flex-row gap-2">
-        {/* Button to trigger the directory selection process */}
+        {/* Button now calls the local handleSelectDirectory */}
         <Button
-          onClick={onSelectDirectoryClick} // Use the passed handler
+          onClick={handleSelectDirectory}
           className="flex-grow"
           disabled={isLoading}
         >
@@ -37,10 +56,10 @@ export function DirectorySelector({
           {selectedDirectory ? "Change Directory" : "Select Directory"}
         </Button>
 
-        {/* Refresh Button */}
+        {/* Refresh Button remains the same */}
         <Button
           variant="outline"
-          onClick={onRefreshDirectoryClick} // Use the passed handler
+          onClick={onRefreshDirectoryClick}
           disabled={!selectedDirectory || isLoading}
           className="border-zed-200 dark:border-zed-700"
           title="Refresh directory contents"
@@ -50,7 +69,7 @@ export function DirectorySelector({
         </Button>
       </div>
 
-      {/* Display the currently selected directory */}
+      {/* Display logic remains the same */}
       {selectedDirectory && (
         <div className="text-sm text-muted-foreground dark:text-zed-400 break-all">
           <span className="font-medium text-foreground dark:text-zed-300">

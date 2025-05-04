@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react"; // Added useEffect
+import { useState, useMemo, useEffect } from "react"; // Added useEffect
 import { Tree, type TreeDataItem } from "./tree";
 import { Button } from "./ui/button";
 import {
@@ -14,18 +14,7 @@ import { Input } from "./ui/input";
 import { Skeleton } from "./ui/skeleton";
 import { ScrollArea } from "./ui/scroll-area";
 import { CodeSnippet } from "./code-snippet"; // Import CodeSnippet
-import { Card } from "./ui/card"; // Import Card for the right panel
-
-// Ensure FileNode includes type and potentially content/language later
-export interface FileNode extends TreeDataItem {
-  id: string; // Usually the path
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  language?: string;
-  content?: string; // Add content field for mock data
-  children?: FileNode[];
-}
+import { FileNode } from "@/lib/types";
 
 interface FileExplorerProps {
   fileStructure: FileNode[];

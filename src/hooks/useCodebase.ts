@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { FileNode } from "../components/file-explorer"; // Keep this interface
+import type { FileNode } from "@/lib/types";
 import type { CodeGraphData } from "../components/code-graph";
 
 // Import invoke from Tauri core
@@ -11,9 +11,9 @@ import { invoke } from "@tauri-apps/api/core"; // Correct import for invoke
 // import { readDir, type FileEntry } from "@tauri-apps/api/fs"; // No longer needed
 // async function buildFileTree(...) { ... } // Remove this function
 
-export function useCodebase() {
+export function useCodebase(directory: string | null) {
   const [selectedDirectory, setSelectedDirectory] = useState<string | null>(
-    null,
+    directory,
   );
   const [fileStructure, setFileStructure] = useState<FileNode[]>([]);
   const [codeGraph, setCodeGraph] = useState<CodeGraphData>({
@@ -43,6 +43,8 @@ export function useCodebase() {
         "read_directory_structure",
         { dirPathStr: directory }, // Pass argument matching Rust function signature
       );
+
+      console.log(structureFromRust);
 
       setFileStructure(structureFromRust);
 

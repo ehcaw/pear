@@ -8,6 +8,7 @@ import { Tabs, TabsTrigger, TabsContent, TabsList } from "./components/ui/tabs";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Card, CardContent } from "./components/ui/card";
+import { ScrollArea } from "./components/ui/scroll-area";
 
 import { WaveBackground } from "./components/wave-background";
 import { PearLogo } from "./components/pear-logo";
@@ -17,6 +18,7 @@ import { CodeGraph } from "./components/code-graph";
 import { CodeSnippet } from "./components/code-snippet";
 import { VoiceControls } from "./components/voice-controls";
 import { ConversationBubble } from "./components/conversation-bubble";
+import type { FileNode } from "@/lib/types";
 
 import { useCodebase } from "./hooks/useCodebase";
 import { useConversation } from "./hooks/useConversation";
@@ -29,6 +31,7 @@ import {
   Folder,
   Zap,
   Send,
+  Code2,
 } from "lucide-react";
 
 function App() {
@@ -39,6 +42,14 @@ function App() {
   const [selectedTab, setSelectedTab] = useState("conversation");
   const [inputText, setInputText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [currentSelectedNode, setCurrentSelectedNode] =
+    useState<FileNode | null>(null);
+  // --- New state for file content ---
+  const [currentFileContent, setCurrentFileContent] = useState<string | null>(
+    null,
+  );
+  const [isFileContentLoading, setIsFileContentLoading] =
+    useState<boolean>(false);
 
   const {
     messages,
@@ -63,7 +74,9 @@ function App() {
     codeGraph,
     isLoading,
     refreshCodebase,
-  } = useCodebase();
+  } = useCodebase(directory);
+
+  console.log(fileStructure);
 
   // Setup event listeners for backend events
   useEffect(() => {
@@ -146,7 +159,6 @@ function App() {
       if (typeof result === "string") {
         console.log("Directory selected via dialog:", result);
         setSelectedDirectory(result); // Update state using the setter from useCodebase
-        invoke("embed_codebase", { dirPathStr: result });
       } else if (result === null) {
         console.log("Directory selection cancelled.");
       }
@@ -156,6 +168,92 @@ function App() {
       // setSelectedDirectory(null); // Optionally clear selection on error
     }
   }, [selectedDirectory, setSelectedDirectory]); // Dependencies
+
+  const handleDirectorySelected = (path: string | null) => {
+    console.log("Directory selected in App:", path);
+    setDirectory(path || ""); // Update the local state
+    if (path) {
+      // Update the codebase hook's state as well
+      setSelectedDirectory(path);
+      setLogs((prev) => [...prev, `Selected directory: ${path}`]);
+      // Optionally trigger parsing immediately after selection
+      // startParsing(path); // Pass the path if startParsing needs it
+    } else {
+      setLogs((prev) => [...prev, "Directory selection cancelled."]);
+    }
+  };
+
+  async function getFileContent(filepath: string): Promise<string | null> {
+    try {
+      // Invoke expects the specific success type (string)
+      const content = await invoke<string>("read_file_content", {
+        filePath: filepath, // Ensure the key matches the Rust function argument name (snake_case)
+      });
+      return content; // Return the string if successful
+    } catch (error) {
+      // Log the error received from the Rust backend
+      console.error(`Failed to read file content for '${filepath}':`, error);
+      return null; // Return null if the promise was rejected (Rust returned Err)
+    }
+  }
+
+  // --- Function to handle the request from FileExplorer's internal button ---
+  // This duplicates the logic from DirectorySelector's internal handler.
+  // Consider refactoring if possible, but this works for now.
+  const requestDirectorySelection = async () => {
+    try {
+      const defaultPath = await homeDir();
+      const result = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: defaultPath,
+      });
+      // Call the main handler with the result
+      handleDirectorySelected(typeof result === "string" ? result : null);
+    } catch (error) {
+      console.error("Error opening directory dialog from request:", error);
+      handleDirectorySelected(null);
+    }
+  };
+
+  const handleNodeSelected = async (node: FileNode | null) => {
+    console.log("Node selected in App:", node);
+    setCurrentSelectedNode(node); // Update the selected node state
+
+    if (node && node.type === "file") {
+      // It's a file, try to fetch its content
+      setIsFileContentLoading(true);
+      setCurrentFileContent(null); // Clear previous content
+      console.log(`Fetching content for file: ${node.path}`); // Log fetch attempt
+      try {
+        const content = await getFileContent(node.path);
+        console.log(content);
+        if (content !== null) {
+          setCurrentFileContent(content);
+          console.log(`Content fetched successfully for ${node.path}`);
+        } else {
+          // getFileContent handles its own errors and returns null
+          setCurrentFileContent("// Failed to load file content.");
+          console.log(`getFileContent returned null for ${node.path}`);
+        }
+      } catch (error) {
+        // Catch any unexpected errors from getFileContent itself (though it should return null)
+        console.error("Unexpected error fetching file content:", error);
+        setCurrentFileContent("// Error loading file content.");
+      } finally {
+        setIsFileContentLoading(false); // Stop loading indicator
+      }
+    } else {
+      // It's a directory or null selection
+      setCurrentFileContent(null); // Clear content display
+      setIsFileContentLoading(false); // Ensure loading is off
+      if (node) {
+        console.log(`Directory selected: ${node.path}`);
+      } else {
+        console.log("Selection cleared.");
+      }
+    }
+  };
 
   return (
     <main className="container mx-auto h-screen overflow-hidden">
@@ -255,8 +353,8 @@ function App() {
             {/* Directory Selector with improved styling */}
             <div className="px-6 py-3 border-b border-zed-100 dark:border-zed-800 bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
               <DirectorySelector
-                selectedDirectory={selectedDirectory || directory}
-                onSelectDirectoryClick={handleSelectDirectory}
+                selectedDirectory={directory} // Pass the directory state
+                onDirectorySelected={handleDirectorySelected} // Pass the new callback
                 onRefreshDirectoryClick={refreshCodebase}
                 isLoading={isLoading || loading}
               />
@@ -329,17 +427,44 @@ function App() {
               className="flex-1 p-6 overflow-hidden bg-white/30 dark:bg-gray-900/30"
             >
               <Card className="h-full overflow-hidden border-zed-200 dark:border-zed-800 shadow-sm">
-                <CardContent className="p-4 h-full">
-                  {codeSnippets && codeSnippets.length > 0 ? (
-                    <div className="space-y-4">
-                      {codeSnippets.map((snippet, idx) => (
-                        <CodeSnippet key={idx} snippet={snippet} />
-                      ))}
+                <CardContent className="p-0 h-full">
+                  {" "}
+                  {/* Remove padding if CodeSnippet handles it */}
+                  {isFileContentLoading ? (
+                    // --- Loading State ---
+                    <div className="flex items-center justify-center h-full">
+                      <p className="text-muted-foreground">
+                        Loading content for {currentSelectedNode?.name}...
+                      </p>
                     </div>
+                  ) : currentSelectedNode &&
+                    currentSelectedNode.type === "file" &&
+                    currentFileContent !== null ? (
+                    // --- Content Loaded State ---
+                    <ScrollArea className="h-full">
+                      {" "}
+                      {/* Wrap in ScrollArea */}
+                      <CodeSnippet
+                        snippet={{
+                          title: currentSelectedNode.path, // Use full path for clarity
+                          language: currentSelectedNode.language || "plaintext", // Use language from node if available
+                          code: currentFileContent,
+                        }}
+                      />
+                    </ScrollArea>
                   ) : (
-                    <div className="h-full flex items-center justify-center text-center">
-                      <p className="text-zed-500 dark:text-zed-400">
-                        No code snippets available yet
+                    // --- Empty/Placeholder State ---
+                    <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                      <Code2 className="h-16 w-16 text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-medium mb-2 text-foreground">
+                        {currentSelectedNode?.type === "directory"
+                          ? `Folder Selected: ${currentSelectedNode.name}`
+                          : "No File Selected"}
+                      </h3>
+                      <p className="text-sm text-muted-foreground max-w-md">
+                        {currentSelectedNode?.type === "directory"
+                          ? "Select a file from the 'Files' tab to view its content here."
+                          : "Select a file from the 'Files' tab to view its content here."}
                       </p>
                     </div>
                   )}
@@ -355,9 +480,19 @@ function App() {
                 <CardContent className="p-4 h-full">
                   {fileStructure ? (
                     <FileExplorer
-                      fileStructure={fileStructure}
+                      fileStructure={fileStructure || []} // Pass file structure from hook (provide default empty array)
+                      // Use the loading state specific to fetching the file structure from useCodebase
+                      isLoading={isLoading}
+                      // Pass the function to request directory selection (for the internal button)
+                      onDirectorySelectRequest={requestDirectorySelection}
+                      // Pass the handler for when a node is selected in the tree
+                      onNodeSelect={handleNodeSelected}
+                      // Pass the currently selected root directory path
+                      selectedDirectoryPath={directory}
+                      // Pass the function to fetch file content when a file node is clicked
                       onFileContentRequest={async (filepath) => {
-                        ("");
+                        console.log(`Requesting content for: ${filepath}`); // Add log
+                        return await getFileContent(filepath);
                       }}
                     />
                   ) : (
