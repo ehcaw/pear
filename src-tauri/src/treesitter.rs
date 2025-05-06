@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 // Load the languages
@@ -84,7 +84,7 @@ pub struct TreeSitterParser {
 
 impl TreeSitterParser {
     pub fn new() -> Self {
-        let mut parser = Parser::new();
+        let parser = Parser::new();
         let mut configs = HashMap::new();
 
         // Pre-initialize configurations for supported languages

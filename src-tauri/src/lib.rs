@@ -24,10 +24,12 @@ pub fn run() {
     // Load environment variables
     dotenvy::dotenv().ok();
 
+    let app_state = AppState::new();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::new())
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             greet,
             parse_and_ingest_codebase,

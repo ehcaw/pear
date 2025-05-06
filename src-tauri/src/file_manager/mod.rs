@@ -1,7 +1,7 @@
 pub mod file_tracker;
+pub mod file_watcher;
 pub mod neo4j;
 pub mod state;
 
-pub use file_tracker::{FileMetadata, FileTracker, FileTrackerError};
-pub use neo4j::NeoDB;
+pub use file_tracker::FileTracker;
 pub use state::AppState;

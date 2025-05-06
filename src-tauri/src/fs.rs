@@ -4,7 +4,6 @@ use ignore::{
 };
 use serde::Serialize;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Debug, Clone)] // Add Clone if needed elsewhere

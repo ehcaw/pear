@@ -1,10 +1,9 @@
 use crate::error::{AppError, Result};
 use crate::models::{CodeEntity, EntityType};
 
-use log::{error, info};
+use log::info;
 use neo4rs::{query, Graph};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 pub struct NeoDB {
     graph: Graph,
@@ -35,15 +34,11 @@ impl NeoDB {
         })
     }
 
-    pub async fn new_simple(
-        uri: String,
-        user: String,
-        password: String,
-    ) -> Result<Self> {
+    pub async fn new_simple(uri: String, user: String, password: String) -> Result<Self> {
         // Generate default IDs if not provided
         let repository_id = "default-repo".to_string();
         let owner_id = "default-owner".to_string();
-        
+
         Self::new(&uri, &user, &password, repository_id, owner_id).await
     }
 
@@ -284,5 +279,97 @@ impl NeoDB {
 
         info!("Registered repository: {}", repo_path);
         Ok(())
+    }
+
+    // Remove a file and all its entities from Neo4j
+    pub async fn remove_file(&self, path: &std::path::Path) -> Result<()> {
+        let file_path = path.to_string_lossy().to_string();
+
+        // Delete the file node and all its contained entities
+        let cypher = r#"
+        MATCH (f:File {path: $path})
+        OPTIONAL MATCH (f)-[:CONTAINS]->(entity)
+        DETACH DELETE f, entity
+        "#;
+
+        let q = query(cypher).param("path", file_path.clone());
+
+        self.graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+
+        info!("Removed file from graph: {}", file_path);
+        Ok(())
+    }
+
+    // Update file path when a file is renamed
+    pub async fn update_file_path(
+        &self,
+        from_path: &std::path::Path,
+        to_path: &std::path::Path,
+    ) -> Result<()> {
+        let old_path = from_path.to_string_lossy().to_string();
+        let new_path = to_path.to_string_lossy().to_string();
+        let new_name = to_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        // Update the file node path and name
+        let cypher = r#"
+        MATCH (f:File {path: $old_path})
+        SET f.path = $new_path, f.name = $new_name
+        "#;
+
+        let q = query(cypher)
+            .param("old_path", old_path.clone())
+            .param("new_path", new_path.clone())
+            .param("new_name", new_name);
+
+        self.graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+
+        // Update parent relationship if needed
+        let new_parent = to_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .to_string_lossy()
+            .to_string();
+
+        if !new_parent.is_empty() {
+            self.create_relationship(&new_parent, &new_path, "CONTAINS")
+                .await?;
+        }
+
+        info!(
+            "Updated file path in graph from {} to {}",
+            old_path, new_path
+        );
+        Ok(())
+    }
+
+    // Check if a file exists in the graph
+    pub async fn file_exists(&self, path: &std::path::Path) -> Result<bool> {
+        let file_path = path.to_string_lossy().to_string();
+
+        let cypher = "MATCH (f:File {path: $path}) RETURN count(f) as count";
+        let q = query(cypher).param("path", file_path);
+
+        let mut result = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+
+        if let Some(row) = result.next().await.map_err(|e| AppError::Neo4j(e))? {
+            let count: i64 = row.get("count").unwrap_or(0);
+            return Ok(count > 0);
+        }
+
+        Ok(false)
     }
 }

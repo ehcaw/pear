@@ -185,7 +185,7 @@ impl Parser {
         Ok(file_count)
     }
 
-    // Parse a single file
+    // Parse a single file with known language
     async fn parse_file(
         &mut self,
         path: &Path,
@@ -231,6 +231,27 @@ impl Parser {
         self.extract_entities(tree.root_node(), &content, &file_path, &mut entities)?;
 
         Ok(entities)
+    }
+    
+    // Parse a single file with extension
+    pub async fn parse_single_file(
+        &mut self,
+        path: &Path,
+        extension: &str,
+    ) -> Result<Vec<CodeEntity>> {
+        // Determine language from extension
+        let language = CodeLanguage::from_extension(extension);
+        
+        // Skip unsupported languages
+        if matches!(language, CodeLanguage::Unknown) {
+            return Err(AppError::UnsupportedLanguage(format!(
+                "Unsupported file extension: {}",
+                extension
+            )));
+        }
+        
+        // Use the existing parse_file method
+        self.parse_file(path, &language).await
     }
 
     // Extract entities from the AST
