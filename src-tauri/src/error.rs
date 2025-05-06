@@ -22,6 +22,12 @@ pub enum AppError {
 
     #[error("Configuration error: {0}")]
     Config(String),
+
+    #[error("Environment variable not found: {0}")]
+    EnvVarNotFound(String),
+
+    #[error("Failed to parse environment variable {0}: {1}")]
+    EnvVarParseError(String, String),
 }
 
 // Make AppError serializable for Tauri

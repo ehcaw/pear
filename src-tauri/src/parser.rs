@@ -4,7 +4,8 @@ use tree_sitter::{Language, Node, Parser as TSParser};
 use walkdir::WalkDir;
 
 use crate::error::{AppError, Result};
-use crate::neo4j::NeoDB;
+use crate::file_manager::neo4j::NeoDB;
+use crate::models::{CodeEntity, EntityType};
 
 // Define supported languages
 #[derive(Debug)]
@@ -40,35 +41,6 @@ impl CodeLanguage {
             )),
         }
     }
-}
-
-// Code entity types
-#[derive(Debug)]
-pub enum EntityType {
-    File,
-    Directory,
-    Function,
-    Method,
-    Class,
-    Struct,
-    Interface,
-    Trait,
-    Enum,
-    Variable,
-    Parameter,
-    CallSite,
-    Import,
-}
-
-// Code entity representation
-#[derive(Debug)]
-pub struct CodeEntity {
-    pub entity_type: EntityType,
-    pub name: String,
-    pub path: String,
-    pub start_line: Option<usize>,
-    pub end_line: Option<usize>,
-    pub properties: std::collections::HashMap<String, String>,
 }
 
 // Main Parser struct
