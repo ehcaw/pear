@@ -34,8 +34,14 @@ import {
   Code2,
 } from "lucide-react";
 
+console.log(
+  "config ",
+  import.meta.env.VITE_NEO4J_URI!,
+  import.meta.env.VITE_NEO4J_USERNAME!,
+  import.meta.env.VITE_NEO4J_PASSWORD!,
+);
+
 function App() {
-  const [directory, setDirectory] = useState("");
   const [status, setStatus] = useState("Ready");
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -74,9 +80,11 @@ function App() {
     codeGraph,
     isLoading,
     refreshCodebase,
-  } = useCodebase(directory);
-
-  console.log(fileStructure);
+  } = useCodebase(
+    import.meta.env.VITE_NEO4J_URI!,
+    import.meta.env.VITE_NEO4J_USERNAME!,
+    import.meta.env.VITE_NEO4J_PASSWORD!,
+  );
 
   // Setup event listeners for backend events
   useEffect(() => {
@@ -108,7 +116,7 @@ function App() {
     try {
       const selectedDir = await invoke<string>("select_directory");
       if (selectedDir) {
-        setDirectory(selectedDir);
+        setSelectedDirectory(selectedDir);
         setLogs((prev) => [...prev, `Selected directory: ${selectedDir}`]);
       }
     } catch (error) {
@@ -116,28 +124,6 @@ function App() {
       setLogs((prev) => [...prev, `Error selecting directory: ${error}`]);
     }
   }
-
-  // Parse and ingest codebase
-  async function startParsing() {
-    if (!directory) {
-      setStatus("Error: No directory selected");
-      setLogs((prev) => [...prev, "Error: No directory selected"]);
-      return;
-    }
-
-    setLoading(true);
-    setStatus("Starting codebase analysis...");
-    setLogs((prev) => [...prev, "Starting codebase analysis..."]);
-
-    try {
-      await invoke("parse_and_ingest_codebase", { directory });
-    } catch (error) {
-      setStatus(`Error: ${error}`);
-      setLogs((prev) => [...prev, `Error during parsing: ${error}`]);
-      setLoading(false);
-    }
-  }
-
   const handleSubmitQuery = () => {
     if (inputText.trim()) {
       console.log("Submitted:", inputText);
@@ -146,38 +132,14 @@ function App() {
     }
   };
 
-  const handleSelectDirectory = useCallback(async () => {
-    try {
-      const defaultPath = selectedDirectory || (await homeDir());
-      const result = await open({
-        directory: true,
-        multiple: false,
-        title: "Select Project Directory",
-        defaultPath: defaultPath,
-      });
-
-      if (typeof result === "string") {
-        console.log("Directory selected via dialog:", result);
-        setSelectedDirectory(result); // Update state using the setter from useCodebase
-      } else if (result === null) {
-        console.log("Directory selection cancelled.");
-      }
-    } catch (error) {
-      console.error("Error opening directory dialog:", error);
-      // Optionally notify user
-      // setSelectedDirectory(null); // Optionally clear selection on error
-    }
-  }, [selectedDirectory, setSelectedDirectory]); // Dependencies
-
-  const handleDirectorySelected = (path: string | null) => {
+  const handleDirectorySelected = async (path: string | null) => {
     console.log("Directory selected in App:", path);
-    setDirectory(path || ""); // Update the local state
+    setSelectedDirectory(path || ""); // Update the local state
     if (path) {
       // Update the codebase hook's state as well
+      await invoke<string>("select_directory");
       setSelectedDirectory(path);
       setLogs((prev) => [...prev, `Selected directory: ${path}`]);
-      // Optionally trigger parsing immediately after selection
-      // startParsing(path); // Pass the path if startParsing needs it
     } else {
       setLogs((prev) => [...prev, "Directory selection cancelled."]);
     }
@@ -353,7 +315,7 @@ function App() {
             {/* Directory Selector with improved styling */}
             <div className="px-6 py-3 border-b border-zed-100 dark:border-zed-800 bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
               <DirectorySelector
-                selectedDirectory={directory} // Pass the directory state
+                selectedDirectory={selectedDirectory} // Pass the directory state
                 onDirectorySelected={handleDirectorySelected} // Pass the new callback
                 onRefreshDirectoryClick={refreshCodebase}
                 isLoading={isLoading || loading}
@@ -488,7 +450,7 @@ function App() {
                       // Pass the handler for when a node is selected in the tree
                       onNodeSelect={handleNodeSelected}
                       // Pass the currently selected root directory path
-                      selectedDirectoryPath={directory}
+                      selectedDirectoryPath={selectedDirectory}
                       // Pass the function to fetch file content when a file node is clicked
                       onFileContentRequest={async (filepath) => {
                         console.log(`Requesting content for: ${filepath}`); // Add log

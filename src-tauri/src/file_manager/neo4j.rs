@@ -45,38 +45,77 @@ impl NeoDB {
     // Setup Neo4j schema (constraints and indexes)
     async fn setup_schema(graph: &Graph) -> Result<()> {
         // Create constraints
-        graph
+        let mut file_constraint_stream = graph
             .execute(query(
                 "CREATE CONSTRAINT file_path IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE",
             ))
             .await
             .map_err(|e| AppError::Neo4j(e))?;
 
-        graph.execute(query("CREATE CONSTRAINT directory_path IF NOT EXISTS FOR (d:Directory) REQUIRE d.path IS UNIQUE"))
+        while let Some(_) = file_constraint_stream
+            .next()
+            .await
+            .map_err(|e| AppError::Neo4j(e))?
+        {
+            // We don't need to do anything with the results, just consume them
+        }
+
+        let mut directory_constraint_stream = graph.execute(query("CREATE CONSTRAINT directory_path IF NOT EXISTS FOR (d:Directory) REQUIRE d.path IS UNIQUE"))
             .await
             .map_err(|e| AppError::Neo4j(e))?;
 
+        while let Some(_) = directory_constraint_stream
+            .next()
+            .await
+            .map_err(|e| AppError::Neo4j(e))?
+        {
+            // We don't need to do anything with the results, just consume them
+        }
         // Create indexes
-        graph
+        let mut function_index_stream = graph
             .execute(query(
                 "CREATE INDEX function_name IF NOT EXISTS FOR (f:Function) ON (f.name)",
             ))
             .await
             .map_err(|e| AppError::Neo4j(e))?;
 
-        graph
+        while let Some(_) = function_index_stream
+            .next()
+            .await
+            .map_err(|e| AppError::Neo4j(e))?
+        {
+            // We don't need to do anything with the results, just consume them
+        }
+
+        let mut class_index_stream = graph
             .execute(query(
                 "CREATE INDEX class_name IF NOT EXISTS FOR (c:Class) ON (c.name)",
             ))
             .await
             .map_err(|e| AppError::Neo4j(e))?;
 
-        graph
+        while let Some(_) = class_index_stream
+            .next()
+            .await
+            .map_err(|e| AppError::Neo4j(e))?
+        {
+            // We don't need to do anything with the results, just consume them
+        }
+
+        let mut language_index_stream = graph
             .execute(query(
                 "CREATE INDEX file_language IF NOT EXISTS FOR (f:File) ON (f.language)",
             ))
             .await
             .map_err(|e| AppError::Neo4j(e))?;
+
+        while let Some(_) = language_index_stream
+            .next()
+            .await
+            .map_err(|e| AppError::Neo4j(e))?
+        {
+            // We don't need to do anything with the results, just consume them
+        }
 
         Ok(())
     }
@@ -167,18 +206,25 @@ impl NeoDB {
             props_map.insert(key.clone(), value.clone());
         }
 
-        // Create Cypher query with parameters
-        let props_str = props_map
+        // Create the string for SET clauses, e.g., "n.name = $name, n.startLine = $startLine"
+        // Exclude 'path' from the SET string as it's the merge key.
+        let set_clause_str = props_map
             .keys()
-            .map(|k| format!("{}: ${}", k, k))
+            .filter(|&k| *k != "path") // 'path' is the merge key, not typically updated in SET this way
+            .map(|k| format!("n.{} = ${}", k, k)) // Correct format: n.property = $parameter
             .collect::<Vec<_>>()
             .join(", ");
 
-        // Create Cypher query
-        let cypher = format!(
-            "MERGE (n:{} {{ path: $path }}) ON CREATE SET n.{} ON MATCH SET n.{}",
-            label, props_str, props_str
-        );
+        let cypher = if set_clause_str.is_empty() {
+            // This case would happen if only 'path' was a property to bind,
+            // which is unlikely given 'name' is always present in CodeEntity.
+            format!("MERGE (n:{} {{ path: $path }})", label)
+        } else {
+            format!(
+                "MERGE (n:{} {{ path: $path }}) ON CREATE SET {} ON MATCH SET {}",
+                label, set_clause_str, set_clause_str
+            )
+        };
 
         // Create a queryable with parameters
         let mut q = query(&cypher);
@@ -187,10 +233,14 @@ impl NeoDB {
         }
 
         // Execute query
-        self.graph
+        let mut result_stream = self
+            .graph
             .execute(q)
             .await
             .map_err(|e| AppError::Neo4j(e))?;
+        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {
+            // We don't need to do anything with the results, just consume them
+        }
 
         // If this is a File, create CONTAINS relationship with its directory
         if matches!(entity.entity_type, EntityType::File) {
@@ -239,10 +289,15 @@ impl NeoDB {
             .param("to_path", to_path);
 
         // Execute query
-        self.graph
+        let mut result_stream = self
+            .graph
             .execute(q)
             .await
             .map_err(|e| AppError::Neo4j(e))?;
+
+        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {
+            // We don't need to do anything with the results, just consume them
+        }
 
         Ok(())
     }
@@ -328,10 +383,15 @@ impl NeoDB {
             .param("new_path", new_path.clone())
             .param("new_name", new_name);
 
-        self.graph
+        let mut result_stream = self
+            .graph
             .execute(q)
             .await
             .map_err(|e| AppError::Neo4j(e))?;
+
+        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {
+            // We don't need to do anything with the results, just consume them
+        }
 
         // Update parent relationship if needed
         let new_parent = to_path

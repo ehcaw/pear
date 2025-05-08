@@ -2,19 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { FileNode } from "@/lib/types";
-import type { CodeGraphData } from "../components/code-graph";
+import type { CodeGraphData, GraphNode } from "@/lib/types";
 
 // Import invoke from Tauri core
 import { invoke } from "@tauri-apps/api/core"; // Correct import for invoke
+import { directoryStore } from "@/context/state";
+import { Neo4jDriver } from "@/lib/neo4j";
 
-// Remove the JS buildFileTree function and related FS imports
-// import { readDir, type FileEntry } from "@tauri-apps/api/fs"; // No longer needed
-// async function buildFileTree(...) { ... } // Remove this function
-
-export function useCodebase(directory: string | null) {
-  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(
-    directory,
-  );
+export function useCodebase(uri: string, username: string, password: string) {
+  const { selectedDirectory, setSelectedDirectory } = directoryStore();
   const [fileStructure, setFileStructure] = useState<FileNode[]>([]);
   const [codeGraph, setCodeGraph] = useState<CodeGraphData>({
     nodes: [],
@@ -22,6 +18,8 @@ export function useCodebase(directory: string | null) {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const neo4jInstance = new Neo4jDriver(uri, username, password);
 
   // Encapsulate loading logic
   const loadCodebase = useCallback(async (directory: string | null) => {
@@ -48,14 +46,26 @@ export function useCodebase(directory: string | null) {
 
       setFileStructure(structureFromRust);
 
+      const parseCodebaseResult: string = await invoke(
+        "parse_and_ingest_codebase",
+        { directory: directory },
+      );
+
+      console.log(parseCodebaseResult);
+
       // --- Generate Code Graph ---
       try {
         console.log("Tried to generate code graph");
+        const codeGraph =
+          await neo4jInstance.getProjectGraph(selectedDirectory);
+        console.log("nodes ", codeGraph.nodes);
+        console.log("links ", codeGraph.links);
+        setCodeGraph(codeGraph);
       } catch (graphError: any) {
         console.error("Error generating code graph:", graphError);
+
         // Still continue with the file structure even if graph fails
       }
-      console.log("File structure loaded successfully via backend.");
       if (structureFromRust.length === 0) {
         console.warn(
           "Directory appears to be empty or only contains ignored files.",

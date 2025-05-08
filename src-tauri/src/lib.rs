@@ -7,11 +7,15 @@ mod fs;
 mod models;
 mod parser;
 mod treesitter;
+mod ts_queries;
 
 // Re-exports
 pub use commands::*;
 pub use file_manager::AppState;
 pub use fs::{read_directory_structure, read_file_content};
+pub use treesitter::TreeSitterParser;
+
+use tauri::Manager;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -37,6 +41,13 @@ pub fn run() {
             read_directory_structure,
             read_file_content
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Get app state and clean up resources
+                let state = window.state::<AppState>();
+                let _ = state.stop_watching();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

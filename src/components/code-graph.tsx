@@ -18,25 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
-
-export interface GraphNode {
-  id: string;
-  name: string;
-  type: "class" | "method" | "function" | "variable";
-  group?: string;
-  value?: number;
-}
-
-export interface GraphLink {
-  source: string;
-  target: string;
-  type: "calls" | "imports" | "extends" | "implements" | "contains";
-}
-
-export interface CodeGraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
-}
+import type { GraphNode, CodeGraphData } from "@/lib/types";
 
 interface CodeGraphProps {
   codeGraph: CodeGraphData;
@@ -50,22 +32,31 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
   const [filterType, setFilterType] = useState<string>("all");
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Update dimensions on resize
+  // Update dimensions on resize and component mount
   useEffect(() => {
     const updateDimensions = () => {
       if (containerRef.current) {
-        setDimensions({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight,
-        });
+        const { clientWidth, clientHeight } = containerRef.current;
+        // Ensure we have meaningful dimensions
+        const width = Math.max(clientWidth, 300);
+        const height = Math.max(clientHeight, 300);
+
+        setDimensions({ width, height });
       }
     };
 
+    // Initial update
     updateDimensions();
+
+    // Set a timeout to ensure container has fully rendered
+    const timer = setTimeout(updateDimensions, 100);
+
+    // Update on resize
     window.addEventListener("resize", updateDimensions);
 
     return () => {
       window.removeEventListener("resize", updateDimensions);
+      clearTimeout(timer);
     };
   }, []);
 
@@ -75,7 +66,23 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
       filterType === "all"
         ? codeGraph.nodes
         : codeGraph.nodes.filter((node) => node.type === filterType),
-    links: codeGraph.links,
+    links: codeGraph.links.filter((link) => {
+      if (filterType === "all") return true;
+      // Only include links where both source and target pass the filter
+      const sourceNode = codeGraph.nodes.find(
+        (node) => node.id === link.source,
+      );
+      const targetNode = codeGraph.nodes.find(
+        (node) => node.id === link.target,
+      );
+      return (
+        sourceNode &&
+        targetNode &&
+        (filterType === "all" ||
+          sourceNode.type === filterType ||
+          targetNode.type === filterType)
+      );
+    }),
   };
 
   const handleZoomIn = () => {
@@ -106,6 +113,14 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
+      // Update dimensions when entering/exiting fullscreen
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        setDimensions({
+          width: Math.max(clientWidth, 300),
+          height: Math.max(clientHeight, 300),
+        });
+      }
     };
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -115,23 +130,64 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
     };
   }, []);
 
+  // Neo4j-like node color palette
   const nodeColor = (node: GraphNode) => {
     switch (node.type) {
       case "class":
-        return "#1A66FF"; // zed-500
+        return "#4C8EDA"; // Neo4j blue
       case "method":
-        return "#4D8EFF"; // zed-400
+        return "#57C7E3"; // Neo4j light blue
       case "function":
-        return "#A1F515"; // pear-400
+        return "#F16667"; // Neo4j red
       case "variable":
-        return "#FFD97F"; // cream-500
+        return "#D9C8AE"; // Neo4j beige
+      case "file":
+        return "#8DCC93"; // Neo4j green
+      case "directory":
+        return "#ECB5C9"; // Neo4j pink
+      case "import":
+        return "#FFC454"; // Neo4j yellow
       default:
-        return "#B3D5FF"; // zed-200
+        return "#C990C0"; // Neo4j purple
     }
   };
 
+  // Calculate node size based on importance (Neo4j-like)
+  const nodeSize = (node: any) => {
+    if (node.isProjectRoot) return 8; // Make the project root node larger
+    switch (node.type) {
+      case "directory":
+        return 6;
+      case "file":
+        return 5;
+      case "class":
+        return 4;
+      case "function":
+      case "method":
+        return 3;
+      default:
+        return 2;
+    }
+  };
+
+  // Fix initial layout and scaling
+  useEffect(() => {
+    if (graphRef.current && filteredData.nodes.length > 0) {
+      // Initial zoom out to see everything
+      graphRef.current.zoom(0.7, 0);
+
+      // Center the graph
+      graphRef.current.centerAt(0, 0);
+
+      // Automatically fit the graph when data changes
+      setTimeout(() => {
+        graphRef.current.zoomToFit(500, 150); // duration, padding
+      }, 500);
+    }
+  }, [filteredData.nodes.length]);
+
   return (
-    <div className="flex flex-col h-full" ref={containerRef}>
+    <div className="flex flex-col h-full w-full" ref={containerRef}>
       <div className="p-4 border-b border-zed-100 dark:border-zed-800 flex flex-wrap gap-2 items-center justify-between">
         <div className="flex items-center gap-2">
           <Select value={filterType} onValueChange={setFilterType}>
@@ -140,10 +196,14 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Types</SelectItem>
+              <SelectItem value="directory">Directories</SelectItem>
+              <SelectItem value="file">Files</SelectItem>
               <SelectItem value="class">Classes</SelectItem>
               <SelectItem value="method">Methods</SelectItem>
               <SelectItem value="function">Functions</SelectItem>
               <SelectItem value="variable">Variables</SelectItem>
+              <SelectItem value="import">Imports</SelectItem>
+              <SelectItem value="callsite">Call Sites</SelectItem>
             </SelectContent>
           </Select>
 
@@ -169,7 +229,7 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
         </div>
       </div>
 
-      <div className="flex-1 relative">
+      <div className="flex-1 relative w-full" style={{ minHeight: "500px" }}>
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
@@ -185,14 +245,72 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
             graphData={filteredData}
             width={dimensions.width}
             height={dimensions.height}
-            nodeLabel="name"
+            backgroundColor="#fafafa" // Light background like Neo4j Browser
+            nodeLabel={(node) => `${node.name} (${node.type})`}
             nodeColor={nodeColor}
-            nodeRelSize={6}
-            linkDirectionalArrowLength={4}
+            nodeRelSize={3} // Smaller base node size (Neo4j style)
+            nodeVal={(node) => nodeSize(node)} // Use node size function for varying sizes
+            // Neo4j-like link styling
+            linkWidth={1.5} // Thicker links
+            linkColor={() => "#A5ABB6"} // Neo4j default link color
+            linkDirectionalArrowLength={6} // Larger arrows
             linkDirectionalArrowRelPos={1}
-            linkCurvature={0.25}
+            linkCurvature={0.2} // Slight curve
+            linkDirectionalParticles={2} // Add flowing particles on links (Neo4j-like)
+            linkDirectionalParticleWidth={1.5} // Particle width
+            linkDirectionalParticleSpeed={0.01} // Slow speed for particles
+            linkLabel={(link) => link.type}
+            // Text styling
+            nodeCanvasObjectMode={() => "after"}
+            nodeCanvasObject={(node, ctx, globalScale) => {
+              const label = node.name;
+              const fontSize = 12 / globalScale;
+              ctx.font = `${fontSize}px Sans-Serif`;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillStyle = "rgba(0,0,0,0.8)";
+
+              // Only render text if we're zoomed in enough
+              if (globalScale > 0.4) {
+                // Background for text (Neo4j style)
+                const textWidth = ctx.measureText(label).width;
+                const bckgDimensions = [textWidth + 8, fontSize + 4].map(
+                  (n) => n,
+                );
+
+                ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+                ctx.fillRect(
+                  node.x - bckgDimensions[0] / 2,
+                  node.y + 8,
+                  bckgDimensions[0],
+                  bckgDimensions[1],
+                );
+
+                // Text
+                ctx.fillStyle = "#333333";
+                ctx.fillText(label, node.x, node.y + 8 + bckgDimensions[1] / 2);
+              }
+            }}
             cooldownTicks={100}
-            onEngineStop={() => console.log("Graph layout stabilized")}
+            onEngineStop={() => {
+              // Make sure to fit graph after physics simulation stops
+              if (graphRef.current) {
+                graphRef.current.zoomToFit(400, 150);
+              }
+            }}
+            onNodeClick={(node) => {
+              // Center view on clicked node
+              if (graphRef.current) {
+                graphRef.current.centerAt(node.x, node.y, 1000);
+                graphRef.current.zoom(1.5, 1000);
+              }
+              console.log("Clicked node:", node);
+            }}
+            // Tweak force settings for better layout
+            d3AlphaDecay={0.02}
+            d3VelocityDecay={0.15}
+            warmupTicks={50}
+            cooldownTime={2000}
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">

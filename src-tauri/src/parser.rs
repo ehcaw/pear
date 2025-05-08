@@ -1,11 +1,12 @@
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
-use tree_sitter::{Language, Node, Parser as TSParser};
+use tree_sitter::{Language, Node, Parser as TSParser, Query, QueryCursor};
 use walkdir::WalkDir;
 
 use crate::error::{AppError, Result};
 use crate::file_manager::neo4j::NeoDB;
 use crate::models::{CodeEntity, EntityType};
+use crate::ts_queries;
 
 // Define supported languages
 #[derive(Debug)]
@@ -62,13 +63,18 @@ impl Parser {
         neo_db: &NeoDB,
         directory: &str,
     ) -> Result<usize> {
+        println!("Starting parse_and_ingest_directory for: {}", directory);
         let mut file_count = 0;
 
         // Create directory entity for the root directory
         let dir_path = Path::new(directory);
+        println!("Processing root directory: {:?}", dir_path);
+
         let dir_name = dir_path
             .file_name()
             .ok_or_else(|| AppError::Parse("Invalid directory name".to_string()))?;
+
+        println!("Root directory name: {:?}", dir_name);
 
         let dir_entity = CodeEntity {
             entity_type: EntityType::Directory,
@@ -79,8 +85,13 @@ impl Parser {
             properties: std::collections::HashMap::new(),
         };
 
+        println!("Created root directory entity: {:?}", dir_entity);
+
         // Ingest directory entity
-        neo_db.ingest_entity(&dir_entity).await?;
+        match neo_db.ingest_entity(&dir_entity).await {
+            Ok(_) => println!("Successfully ingested root directory entity"),
+            Err(e) => println!("Error ingesting root directory: {:?}", e),
+        }
 
         // Collect directories to ignore
         let ignore_dirs = [
@@ -96,21 +107,32 @@ impl Parser {
             ".nuxt",
         ];
 
+        println!(
+            "Starting directory walk with ignore patterns: {:?}",
+            ignore_dirs
+        );
+
         // Walk directory recursively
         for entry in WalkDir::new(directory)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
                 let file_name = e.file_name().to_string_lossy();
-                !ignore_dirs.iter().any(|d| &file_name == d)
+                let should_process = !ignore_dirs.iter().any(|d| &file_name == d);
+                if !should_process {
+                    println!("Ignoring directory/file: {}", file_name);
+                }
+                should_process
             })
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
+            println!("Processing entry: {}", path.display());
 
             // Skip non-file entries
             if !path.is_file() {
                 if path.is_dir() {
+                    println!("Found directory: {}", path.display());
                     // Process directory entity
                     if let Some(parent_path) = path.parent() {
                         let dir_entity = CodeEntity {
@@ -122,56 +144,86 @@ impl Parser {
                             properties: std::collections::HashMap::new(),
                         };
 
+                        println!("Created directory entity: {:?}", dir_entity);
+
                         // Ingest directory entity
-                        neo_db.ingest_entity(&dir_entity).await?;
+                        match neo_db.ingest_entity(&dir_entity).await {
+                            Ok(_) => println!("Successfully ingested directory entity"),
+                            Err(e) => println!("Error ingesting directory: {:?}", e),
+                        }
 
                         // Create CONTAINS relationship
-                        neo_db
+                        println!(
+                            "Creating CONTAINS relationship: {} contains {}",
+                            parent_path.display(),
+                            path.display()
+                        );
+
+                        match neo_db
                             .create_relationship(
                                 &parent_path.to_string_lossy().to_string(),
                                 &path.to_string_lossy().to_string(),
                                 "CONTAINS",
                             )
-                            .await?;
+                            .await
+                        {
+                            Ok(_) => println!("Successfully created CONTAINS relationship"),
+                            Err(e) => println!("Error creating relationship: {:?}", e),
+                        }
                     }
                 }
                 continue;
             }
 
-            // Skip files without extension
+            // Handle files
             let extension = match path.extension() {
-                Some(ext) => ext.to_string_lossy().to_string(),
-                None => continue,
+                Some(ext) => {
+                    let ext_str = ext.to_string_lossy().to_string();
+                    println!("Found file with extension: {}", ext_str);
+                    ext_str
+                }
+                None => {
+                    println!("Skipping file without extension: {}", path.display());
+                    continue;
+                }
             };
 
             // Determine language
             let language = CodeLanguage::from_extension(&extension);
+            println!("Determined language for {}: {:?}", path.display(), language);
 
             // Skip unsupported languages
             if matches!(language, CodeLanguage::Unknown) {
+                println!("Skipping unsupported language file: {}", path.display());
                 continue;
             }
 
-            // Emit progress event
-            let relative_path = path.strip_prefix(directory).unwrap_or(path);
-            app_handle
-                .emit(
-                    "parse_progress",
-                    format!("Processing {}", relative_path.display()),
-                )
-                .unwrap();
-
             // Parse file
+            println!("Starting to parse file: {}", path.display());
             match self.parse_file(path, &language).await {
                 Ok(entities) => {
+                    println!(
+                        "Successfully parsed file. Found {} entities",
+                        entities.0.len()
+                    );
                     // Create entities in Neo4j
-                    for entity in entities {
-                        neo_db.ingest_entity(&entity).await?;
+                    for (i, entity) in entities.0.iter().enumerate() {
+                        println!(
+                            "Ingesting entity {}/{}: {:?}",
+                            i + 1,
+                            entities.0.len(),
+                            entity
+                        );
+                        match neo_db.ingest_entity(entity).await {
+                            Ok(_) => println!("Successfully ingested entity"),
+                            Err(e) => println!("Error ingesting entity: {:?}", e),
+                        }
                     }
                     file_count += 1;
+                    println!("File count now: {}", file_count);
                 }
                 Err(e) => {
-                    // Emit error event
+                    println!("Error parsing file {}: {:?}", path.display(), e);
                     app_handle
                         .emit(
                             "parse_error",
@@ -182,15 +234,23 @@ impl Parser {
             }
         }
 
+        println!("Finished processing. Total files processed: {}", file_count);
         Ok(file_count)
     }
 
-    // Parse a single file with known language
+    // Parse a single file
     async fn parse_file(
         &mut self,
         path: &Path,
         language: &CodeLanguage,
-    ) -> Result<Vec<CodeEntity>> {
+    ) -> Result<(
+        Vec<CodeEntity>,
+        Vec<(
+            std::string::String,
+            std::string::String,
+            std::string::String,
+        )>,
+    )> {
         // Read file content
         let content = std::fs::read_to_string(path).map_err(|e| AppError::Io(e))?;
 
@@ -224,24 +284,46 @@ impl Parser {
             },
         }];
 
-        // Create CONTAINS relationship between parent directory and file
-        // (This will be handled in the Neo4j module)
+        let extractor = Extractor::new(lang);
+        let (mut entities, relations) = extractor.run(&tree, &content, &file_path);
 
-        // Parse the syntax tree to extract entities
-        self.extract_entities(tree.root_node(), &content, &file_path, &mut entities)?;
+        // File node first:
+        entities.insert(
+            0,
+            CodeEntity {
+                entity_type: EntityType::File,
+                name: file_name,
+                path: file_path.clone(),
+                start_line: None,
+                end_line: None,
+                properties: {
+                    let mut p = std::collections::HashMap::new();
+                    p.insert("language".into(), format!("{:?}", language));
+                    p.insert("lines".into(), content.lines().count().to_string());
+                    p
+                },
+            },
+        );
 
-        Ok(entities)
+        Ok((entities, relations))
     }
-    
+
     // Parse a single file with extension
     pub async fn parse_single_file(
         &mut self,
         path: &Path,
         extension: &str,
-    ) -> Result<Vec<CodeEntity>> {
+    ) -> Result<(
+        Vec<CodeEntity>,
+        Vec<(
+            std::string::String,
+            std::string::String,
+            std::string::String,
+        )>,
+    )> {
         // Determine language from extension
         let language = CodeLanguage::from_extension(extension);
-        
+
         // Skip unsupported languages
         if matches!(language, CodeLanguage::Unknown) {
             return Err(AppError::UnsupportedLanguage(format!(
@@ -249,87 +331,101 @@ impl Parser {
                 extension
             )));
         }
-        
+
         // Use the existing parse_file method
         self.parse_file(path, &language).await
     }
+}
 
-    // Extract entities from the AST
-    fn extract_entities(
+pub struct Extractor {
+    query: Query,
+}
+
+impl Extractor {
+    pub fn new(lang: Language) -> Self {
+        let query = Query::new(lang, ts_queries::ENTITY_AND_DEP_QUERY).expect("bad TS query");
+        Self { query }
+    }
+
+    // returns (entities, relationships)
+    pub fn run(
         &self,
-        node: Node,
+        tree: &tree_sitter::Tree,
         source: &str,
         file_path: &str,
-        entities: &mut Vec<CodeEntity>,
-    ) -> Result<()> {
-        // This is a simplified implementation. In a complete implementation, you'd need to:
-        // 1. Handle different node types based on the language
-        // 2. Extract functions, classes, variables, etc.
-        // 3. Track relationships between entities
+    ) -> (Vec<CodeEntity>, Vec<(String, String, String)>) {
+        let mut entities = Vec::new();
+        let mut relations = Vec::new();
+        let mut qc = QueryCursor::new();
 
-        // For now, let's implement a basic version that just identifies functions
-        if node.kind() == "function_definition" || node.kind() == "function_declaration" {
-            // Extract function name
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" || child.kind() == "name" {
-                    let name = child
-                        .utf8_text(source.as_bytes())
-                        .map_err(|e| AppError::Parse(e.to_string()))?;
+        let matches = qc.matches(&self.query, tree.root_node(), source.as_bytes());
+        for m in matches {
+            for cap in m.captures {
+                let node = cap.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+                let (row, col) = (
+                    node.start_position().row + 1,
+                    node.start_position().column + 1,
+                );
 
-                    let start_position = node.start_position();
-                    let end_position = node.end_position();
+                match self.query.capture_names()[cap.index as usize].as_str() {
+                    // ── entities ────────────────────────────────────
+                    "class.node" => {
+                        entities.push(CodeEntity {
+                            entity_type: EntityType::Class,
+                            name: text.to_owned(),
+                            path: file_path.to_owned(),
+                            start_line: Some(row),
+                            end_line: Some(node.end_position().row + 1),
+                            properties: {
+                                let mut p = std::collections::HashMap::new();
+                                p.insert("column_start".into(), col.to_string());
+                                p
+                            },
+                        });
+                    }
+                    "fn.node" => {
+                        entities.push(CodeEntity {
+                            entity_type: EntityType::Function,
+                            name: text.to_owned(),
+                            path: file_path.to_owned(),
+                            start_line: Some(row),
+                            end_line: Some(node.end_position().row + 1),
+                            properties: {
+                                let mut p = std::collections::HashMap::new();
+                                p.insert("column_start".into(), col.to_string());
+                                p
+                            },
+                        });
+                    }
+                    "iface.node" => {
+                        entities.push(CodeEntity {
+                            entity_type: EntityType::Interface,
+                            name: text.to_owned(),
+                            path: file_path.to_owned(),
+                            start_line: Some(row),
+                            end_line: Some(node.end_position().row + 1),
+                            properties: {
+                                let mut p = std::collections::HashMap::new();
+                                p.insert("column_start".into(), col.to_string());
+                                p
+                            },
+                        });
+                    }
 
-                    entities.push(CodeEntity {
-                        entity_type: EntityType::Function,
-                        name: name.to_string(),
-                        path: file_path.to_string(),
-                        start_line: Some(start_position.row + 1),
-                        end_line: Some(end_position.row + 1),
-                        properties: std::collections::HashMap::new(),
-                    });
-
-                    break;
-                }
-            }
-        } else if node.kind() == "class_declaration" || node.kind() == "struct_definition" {
-            // Extract class/struct name
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" || child.kind() == "name" {
-                    let name = child
-                        .utf8_text(source.as_bytes())
-                        .map_err(|e| AppError::Parse(e.to_string()))?;
-
-                    let start_position = node.start_position();
-                    let end_position = node.end_position();
-
-                    let entity_type = if node.kind() == "class_declaration" {
-                        EntityType::Class
-                    } else {
-                        EntityType::Struct
-                    };
-
-                    entities.push(CodeEntity {
-                        entity_type,
-                        name: name.to_string(),
-                        path: file_path.to_string(),
-                        start_line: Some(start_position.row + 1),
-                        end_line: Some(end_position.row + 1),
-                        properties: std::collections::HashMap::new(),
-                    });
-
-                    break;
+                    // ── deps  (edges are made once per stmt) ────────
+                    "import.src" => {
+                        let target = text.trim_matches('"').to_owned();
+                        relations.push((file_path.to_owned(), target, "IMPORTS".to_owned()));
+                    }
+                    "export.src" => {
+                        let target = text.trim_matches('"').to_owned();
+                        relations.push((file_path.to_owned(), target, "EXPORTS".to_owned()));
+                    }
+                    _ => {}
                 }
             }
         }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.extract_entities(child, source, file_path, entities)?;
-        }
-
-        Ok(())
+        (entities, relations)
     }
 }

@@ -282,7 +282,7 @@ impl FileWatcherSystem {
                     // Parse the file
                     match parser_guard.parse_single_file(path, &extension).await {
                         Ok(entities) => {
-                            for entity in entities {
+                            for entity in entities.0 {
                                 neo_db.ingest_entity(&entity).await;
                             }
                             info!("Updated file in graph: {}", path.display());

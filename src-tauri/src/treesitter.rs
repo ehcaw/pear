@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
+
+use crate::models::{CodeEntity, EntityType};
 
 // Load the languages
 extern "C" {
@@ -186,5 +188,80 @@ impl TreeSitterParser {
             path: file_path.to_string_lossy().to_string(),
             items,
         })
+    }
+    fn entities_and_rels(
+        tree: &tree_sitter::Tree,
+        source: &str,
+        query: &Query,
+        file_path: &str, // Add file_path parameter
+    ) -> (Vec<CodeEntity>, Vec<(String, String, String)>) {
+        let mut qc = QueryCursor::new();
+        let matches = qc.matches(query, tree.root_node(), source.as_bytes());
+
+        let mut entities = Vec::new();
+        let mut relationships = Vec::new();
+
+        for m in matches {
+            for c in m.captures {
+                let node = c.node;
+                let name = node.utf8_text(source.as_bytes()).unwrap_or("").to_owned();
+                let start_line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
+
+                // Get the capture name
+                let capture_name = query.capture_names()[c.index as usize].as_str();
+
+                match capture_name {
+                    // Entities
+                    "class.name" => {
+                        entities.push(CodeEntity {
+                            name,
+                            path: file_path.to_string(),
+                            entity_type: EntityType::Class,
+                            start_line: Some(start_line),
+                            end_line: Some(end_line),
+                            properties: HashMap::new(),
+                        });
+                    }
+                    "function.name" => {
+                        entities.push(CodeEntity {
+                            name,
+                            path: file_path.to_string(),
+                            entity_type: EntityType::Function,
+                            start_line: Some(start_line),
+                            end_line: Some(end_line),
+                            properties: HashMap::new(),
+                        });
+                    }
+                    "interface.name" => {
+                        entities.push(CodeEntity {
+                            name,
+                            path: file_path.to_string(),
+                            entity_type: EntityType::Interface,
+                            start_line: Some(start_line),
+                            end_line: Some(end_line),
+                            properties: HashMap::new(),
+                        });
+                    }
+                    // Import relationships
+                    "import.source" => {
+                        let dep_path = name.trim_matches('"').to_string();
+                        relationships.push((
+                            file_path.to_string(),
+                            dep_path,
+                            "IMPORTS".to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        (entities, relationships)
+    }
+
+    fn pos(node: Node) -> (usize, usize) {
+        let start = node.start_position();
+        (start.row + 1, start.column + 1)
     }
 }
