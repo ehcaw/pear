@@ -13,7 +13,6 @@ mod ts_queries;
 pub use commands::*;
 pub use file_manager::AppState;
 pub use fs::{read_directory_structure, read_file_content};
-pub use treesitter::TreeSitterParser;
 
 use tauri::Manager;
 

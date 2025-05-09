@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::file_manager::neo4j::NeoDB;
-use crate::models::{CodeItem, EntityType, FileStructure, LinkEntity, LinkType};
+use crate::models::{CodeEntity, EntityType, FileStructure, LinkEntity, LinkType};
 use crate::ts_queries;
 use queues::*;
 use serde::Serialize;
@@ -76,7 +76,7 @@ impl Parser {
         app_handle: &AppHandle,
         neo_db: &NeoDB,
         directory: &str,
-    ) -> Result<(Vec<CodeItem>, Vec<LinkEntity>)> {
+    ) -> Result<(Vec<CodeEntity>, Vec<LinkEntity>)> {
         let dir_path = Path::new(directory);
         // let dir_entity = CodeItem {
         //     id: dir_path.clone().to_string_lossy().to_string(),
@@ -88,7 +88,7 @@ impl Parser {
         //     properties: std::collections::HashMap::new(),
         //     children: Some(Vec::new()),
         // };
-        let mut nodes: Vec<CodeItem> = Vec::new();
+        let mut nodes: Vec<CodeEntity> = Vec::new();
         let mut links: Vec<LinkEntity> = Vec::new();
         let mut q: Queue<PathBuf> = queue![dir_path.to_path_buf()];
 
@@ -165,7 +165,7 @@ impl Parser {
                             // Add the path to the queue (using owned PathBuf)
                             q.add(entry_path.clone()).unwrap_or_else(|_| None);
 
-                            let dir_node = CodeItem {
+                            let dir_node = CodeEntity {
                                 id: path_str.clone().to_string(),
                                 entity_type: EntityType::Directory,
                                 path: path_str.clone().to_string(),
@@ -209,7 +209,7 @@ impl Parser {
                 // Determine language
                 let language = CodeLanguage::from_extension(&extension);
                 let file_breakdown = self.parse_file(&dir_path, &language).await.unwrap();
-                let file_node = CodeItem {
+                let file_node = CodeEntity {
                     id: curr_node.clone().to_string_lossy().to_string(),
                     entity_type: EntityType::Project,
                     path: dir_path.to_string_lossy().to_string(),
@@ -238,9 +238,13 @@ impl Parser {
         Ok((nodes, links))
     }
 
-    async fn parse_file(&mut self, path: &Path, language: &CodeLanguage) -> Result<Vec<CodeItem>> {
+    async fn parse_file(
+        &mut self,
+        path: &Path,
+        language: &CodeLanguage,
+    ) -> Result<Vec<CodeEntity>> {
         let content = std::fs::read_to_string(path).map_err(|e| AppError::Io(e))?;
-        let mut children: Vec<CodeItem> = Vec::new();
+        let mut children: Vec<CodeEntity> = Vec::new();
 
         let lang = language.get_language()?;
         self.ts_parser
@@ -281,7 +285,7 @@ impl Parser {
                 _ => EntityType::Function,
             };
 
-            children.push(CodeItem {
+            children.push(CodeEntity {
                 id: name,
                 path: path.to_string_lossy().to_string(),
                 entity_type,
@@ -357,7 +361,7 @@ impl Parser {
 
         // Use the existing parse_file method
         let parse_result = self.parse_file(path, &language).await.map_err(|e| e)?;
-        let mut items: Vec<CodeItem> = Vec::new();
+        let mut items: Vec<CodeEntity> = Vec::new();
         for ent in parse_result.into_iter() {
             items.push(ent);
         }

@@ -25,7 +25,7 @@ pub async fn parse_and_ingest_codebase(app_handle: AppHandle, directory: String)
     let mut parser = Parser::new();
 
     // Parse and ingest
-    let file_count = parser
+    let (nodes, links) = parser
         .parse_and_ingest_directory(&app_handle, &neo_db, &directory)
         .await?;
 
@@ -33,14 +33,11 @@ pub async fn parse_and_ingest_codebase(app_handle: AppHandle, directory: String)
     app_handle
         .emit(
             "parse_complete",
-            format!("Analysis complete. Processed {} files.", file_count.0.len()),
+            format!("Analysis complete. Processed {} files.", nodes.len()),
         )
         .unwrap();
 
-    Ok(format!(
-        "Successfully processed {} files.",
-        file_count.0.len()
-    ))
+    Ok(format!("Successfully processed {} files.", nodes.len()))
 }
 
 #[tauri::command]

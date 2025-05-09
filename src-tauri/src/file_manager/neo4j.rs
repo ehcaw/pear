@@ -1,9 +1,10 @@
 use crate::error::{AppError, Result};
-use crate::models::{CodeItem, EntityType};
+use crate::models::{CodeEntity, EntityType, FileStructure, LinkEntity, LinkType};
 
 use log::info;
-use neo4rs::{query, Graph};
+use neo4rs::{query, BoltType, Graph, Row};
 use std::collections::HashMap;
+use std::path::Path;
 
 pub struct NeoDB {
     graph: Graph,
@@ -32,6 +33,20 @@ impl NeoDB {
             repository_id,
             owner_id,
         })
+    }
+
+    pub fn match_entity_type(&self, entity: &EntityType) -> Result<&str> {
+        let label = match entity {
+            EntityType::Project => "Project",
+            EntityType::File => "File",
+            EntityType::Directory => "Directory",
+            EntityType::Function => "Function",
+            EntityType::Method => "Method",
+            EntityType::Class => "Class",
+            EntityType::Interface => "Interface",
+            EntityType::Import => "Import",
+        };
+        Ok(label)
     }
 
     pub async fn new_simple(uri: String, user: String, password: String) -> Result<Self> {
@@ -120,8 +135,7 @@ impl NeoDB {
         Ok(())
     }
 
-    // Ingest a code entity into Neo4j
-    pub async fn ingest_entity(&self, entity: &CodeItem) -> Result<()> {
+    pub async fn ingest_entity(&self, entity: &CodeEntity) -> Result<()> {
         let label = match entity.entity_type {
             EntityType::Project => "Project",
             EntityType::File => "File",
@@ -133,73 +147,51 @@ impl NeoDB {
             EntityType::Import => "Import",
         };
 
-        // Build base properties map
-        let mut props_map = HashMap::new();
-        props_map.insert("path".to_string(), entity.path.clone());
+        let cypher_query = format!(
+            "MERGE (n:{} {{path: $path, start_line: $start_line, end_line: $end_line}}",
+            label
+        );
 
-        // Add line numbers if available
-        if let Some(start_line) = entity.start_line {
-            props_map.insert("startLine".to_string(), start_line.to_string());
-        }
+        let q = query(&cypher_query)
+            .param("path", entity.path.clone())
+            .param("start_line", entity.start_line.unwrap_or(0) as i64)
+            .param("end_line", entity.end_line.unwrap_or(0) as i64);
 
-        if let Some(end_line) = entity.end_line {
-            props_map.insert("endLine".to_string(), end_line.to_string());
-        }
-
-        // Add custom properties
-        for (key, value) in &entity.properties {
-            props_map.insert(key.clone(), value.clone());
-        }
-
-        // Create the string for SET clauses, e.g., "n.name = $name, n.startLine = $startLine"
-        // Exclude 'path' from the SET string as it's the merge key.
-        let set_clause_str = props_map
-            .keys()
-            .filter(|&k| *k != "path") // 'path' is the merge key, not typically updated in SET this way
-            .map(|k| format!("n.{} = ${}", k, k)) // Correct format: n.property = $parameter
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let cypher = if set_clause_str.is_empty() {
-            // This case would happen if only 'path' was a property to bind,
-            // which is unlikely given 'name' is always present in CodeEntity.
-            format!("MERGE (n:{} {{ path: $path }})", label)
-        } else {
-            format!(
-                "MERGE (n:{} {{ path: $path }}) ON CREATE SET {} ON MATCH SET {}",
-                label, set_clause_str, set_clause_str
-            )
-        };
-
-        // Create a queryable with parameters
-        let mut q = query(&cypher);
-        for (k, v) in props_map {
-            q = q.param(&k, v);
-        }
-
-        // Execute query
         let mut result_stream = self
             .graph
             .execute(q)
             .await
             .map_err(|e| AppError::Neo4j(e))?;
-        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {
-            // We don't need to do anything with the results, just consume them
-        }
+        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {}
+        Ok(())
+    }
 
-        // If this is a File, create CONTAINS relationship with its directory
-        if matches!(entity.entity_type, EntityType::File) {
-            let file_path = std::path::Path::new(&entity.path);
-            if let Some(parent) = file_path.parent() {
-                self.create_relationship(
-                    &parent.to_string_lossy().to_string(),
-                    &entity.path,
-                    "CONTAINS",
-                )
-                .await?;
-            }
-        }
+    pub async fn create_db_link(&self, link: &LinkEntity) -> Result<()> {
+        let label = match link.link_type {
+            LinkType::Has => "Has",
+            LinkType::Owns => "Owns",
+            LinkType::Uses => "Uses",
+            LinkType::Import => "Imports",
+        };
+        let cypher_query = format!(
+            "MATCH (source {{id: $source_id}})
+        MATCH (target {{id: $target_id}})
+        MERGE (source)-[r:$relationship_type]->(target)
+        ON CREATE SET r.created_at = datetime(), r.property1 = $property1, r.property2 = $property2
+        RETURN r"
+        );
 
+        let q = query(&cypher_query)
+            .param("source_id", link.from_name.clone())
+            .param("target_id", link.to_name.clone())
+            .param("relationship_type", label);
+
+        let mut result_stream = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+        while let Some(_) = result_stream.next().await.map_err(|e| AppError::Neo4j(e))? {}
         Ok(())
     }
 
@@ -249,7 +241,6 @@ impl NeoDB {
 
     // Register a repository in Neo4j
     pub async fn register_repository(&self, repo_path: &str) -> Result<()> {
-        use crate::models::{CodeItem, EntityType};
         use std::collections::HashMap;
         use std::path::Path;
 
@@ -261,7 +252,7 @@ impl NeoDB {
             .to_string();
 
         // Create repository entity
-        let repo_entity = CodeItem {
+        let repo_entity = CodeEntity {
             id: repo_path.to_string(),
             path: repo_path.to_string(),
             entity_type: EntityType::Directory,
@@ -377,5 +368,333 @@ impl NeoDB {
         }
 
         Ok(false)
+    }
+
+    pub async fn batch_ingest_entities(&self, entities: &[CodeEntity]) -> Result<()> {
+        if entities.is_empty() {
+            return Ok(());
+        }
+
+        // Build UNWIND query for multiple node creation in one transaction
+        let mut query_parts = vec!["UNWIND $entities AS entity"];
+        query_parts.push("MERGE (n:Code {id: entity.id})");
+
+        // Set common properties
+        query_parts.push("SET n.path = entity.path");
+        query_parts.push("SET n.updated_at = datetime()");
+        query_parts.push("SET n:Entity"); // Base label for all entities
+
+        // Set type-specific label
+        query_parts.push("WITH n, entity");
+        query_parts.push("CALL apoc.create.addLabels(n, [entity.type]) YIELD node");
+
+        // Set other properties
+        query_parts.push("SET node.start_line = entity.start_line");
+        query_parts.push("SET node.end_line = entity.end_line");
+        query_parts.push("SET node.name = entity.name");
+
+        // Handle properties map
+        query_parts.push("WITH node, entity");
+        query_parts.push("UNWIND keys(entity.properties) AS key");
+        query_parts.push("SET node[key] = entity.properties[key]");
+
+        let cypher = query_parts.join("\n");
+
+        // Prepare entities data
+        let entity_data: Vec<BoltType> = entities
+            .iter()
+            .map(|e| {
+                let mut m: HashMap<String, BoltType> = HashMap::new();
+                m.insert("id".into(), e.id.clone().into());
+                m.insert("path".into(), e.path.clone().into());
+
+                // label
+                let t = match e.entity_type {
+                    EntityType::Project => "Project",
+                    EntityType::Directory => "Directory",
+                    EntityType::File => "File",
+                    EntityType::Class => "Class",
+                    EntityType::Interface => "Interface",
+                    EntityType::Method => "Method",
+                    EntityType::Function => "Function",
+                    EntityType::Import => "Import",
+                };
+                m.insert("type".into(), t.into());
+
+                if let Some(sl) = e.start_line {
+                    m.insert("start_line".into(), (sl as i64).into());
+                }
+                if let Some(el) = e.end_line {
+                    m.insert("end_line".into(), (el as i64).into());
+                }
+
+                let name = std::path::Path::new(&e.path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| e.id.clone());
+                m.insert("name".into(), name.into());
+
+                let props: HashMap<String, BoltType> = e
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone().into()))
+                    .collect();
+                m.insert("properties".into(), props.into());
+
+                m.into() // HashMap<String,BoltType> → BoltType
+            })
+            .collect();
+
+        // Execute the query
+        let q = query(&cypher).param("entities", entity_data);
+        let mut result = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+
+        // Consume the results
+        while let Some(_) = result.next().await.map_err(|e| AppError::Neo4j(e))? {}
+
+        info!("Batch ingested {} entities", entities.len());
+        Ok(())
+    }
+
+    // Batch create multiple relationships at once
+    pub async fn batch_create_links(&self, links: &[LinkEntity]) -> Result<()> {
+        if links.is_empty() {
+            return Ok(());
+        }
+
+        // Build UNWIND query for multiple relationship creation
+        let cypher = r#"
+            UNWIND $links AS link
+            MATCH (source {id: link.from_id})
+            MATCH (target {id: link.to_id})
+            CALL apoc.merge.relationship(source, link.type,
+                {created_at: datetime()},
+                {updated_at: datetime()},
+                target)
+            YIELD rel
+            RETURN count(rel) as count
+            "#;
+
+        // Prepare link data
+        let link_data: Vec<BoltType> = links
+            .iter()
+            .map(|l| {
+                let mut m: HashMap<String, BoltType> = HashMap::new();
+                m.insert("from_id".into(), l.from_name.clone().into());
+                m.insert("to_id".into(), l.to_name.clone().into());
+                let kind = match l.link_type {
+                    LinkType::Has => "HAS",
+                    LinkType::Owns => "OWNS",
+                    LinkType::Uses => "USES",
+                    LinkType::Import => "IMPORTS",
+                };
+                m.insert("rel_type".into(), kind.into());
+                m.into()
+            })
+            .collect();
+
+        // Execute the query
+        let q = query(cypher).param("links", link_data);
+        let mut result = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| AppError::Neo4j(e))?;
+
+        // Get the count of created relationships
+        let mut count = 0;
+        if let Some(row) = result.next().await.map_err(|e| AppError::Neo4j(e))? {
+            count = row.get::<i64>("count").unwrap_or(0);
+        }
+
+        info!("Created {} relationships in batch", count);
+        Ok(())
+    }
+
+    // Process a file and create all necessary nodes and relationships
+    pub async fn process_file_structure(&self, file_structure: &FileStructure) -> Result<()> {
+        // First, create file node
+        let file_path = &file_structure.file_path;
+        let file_name = std::path::Path::new(file_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_path.clone());
+
+        let file_extension = std::path::Path::new(file_path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Create file entity
+        let file_id = format!("file:{}", file_path);
+        let file_entity = CodeEntity {
+            id: file_id.clone(),
+            path: file_path.clone(),
+            entity_type: EntityType::File,
+            start_line: None,
+            end_line: None,
+            properties: {
+                let mut props = HashMap::new();
+                props.insert("name".to_string(), file_name);
+                props.insert("extension".to_string(), file_extension);
+                props.insert("hash".to_string(), file_structure.file_hash.clone());
+                props
+            },
+            children: None,
+        };
+
+        // Collect all entities and relationships
+        let mut all_entities = vec![file_entity];
+        let mut all_links = Vec::new();
+
+        // Process items within the file
+        for item in &file_structure.items {
+            // Create entity for each item
+            let item_id = if item.id.is_empty() {
+                // unwrap the &str from match_entity_type() or bubble the error up
+                let label = self.match_entity_type(&item.entity_type)?;
+                // name := last path component, or fall back to autogenerated uuid
+                let name = Path::new(&item.path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                format!("{}:{}", label.to_lowercase(), name)
+            } else {
+                item.id.clone()
+            };
+
+            let entity = CodeEntity {
+                id: item_id.clone(),
+                path: item.path.clone(),
+                entity_type: item.entity_type.clone(),
+                start_line: item.start_line,
+                end_line: item.end_line,
+                properties: item.properties.clone(),
+                children: None,
+            };
+
+            all_entities.push(entity);
+
+            // Create link from file to item
+            let link = LinkEntity {
+                from_name: file_id.clone(),
+                to_name: item_id.clone(),
+                link_type: LinkType::Has,
+            };
+
+            all_links.push(link);
+
+            // If this is an import, create an IMPORTS relationship
+            if matches!(item.entity_type, EntityType::Import) {
+                if let Some(target_path) = item.properties.get("target") {
+                    let import_link = LinkEntity {
+                        from_name: file_id.clone(),
+                        to_name: format!("file:{}", target_path),
+                        link_type: LinkType::Import,
+                    };
+                    all_links.push(import_link);
+                }
+            }
+
+            // Process any children
+            if let Some(children) = &item.children {
+                for child in children {
+                    let child_id = if child.id.is_empty() {
+                        let label = self.match_entity_type(&child.entity_type)?;
+                        let name = Path::new(&child.path)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        format!("{}:{}", label.to_lowercase(), name)
+                    } else {
+                        child.id.clone()
+                    };
+
+                    let child_entity = CodeEntity {
+                        id: child_id.clone(),
+                        path: child.path.clone(),
+                        entity_type: child.entity_type.clone(),
+                        start_line: child.start_line,
+                        end_line: child.end_line,
+                        properties: child.properties.clone(),
+                        children: None,
+                    };
+
+                    all_entities.push(child_entity);
+
+                    // Create link from parent to child
+                    let parent_child_link = LinkEntity {
+                        from_name: item_id.clone(),
+                        to_name: child_id,
+                        link_type: LinkType::Has,
+                    };
+
+                    all_links.push(parent_child_link);
+                }
+            }
+        }
+
+        // Batch process everything
+        self.batch_ingest_entities(&all_entities).await?;
+        self.batch_create_links(&all_links).await?;
+
+        // Create relationship between file and its directory
+        let dir_path = std::path::Path::new(file_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        if !dir_path.is_empty() {
+            let dir_id = format!("directory:{}", dir_path);
+
+            // Create directory entity if it doesn't exist
+            let dir_entity = CodeEntity {
+                id: dir_id.clone(),
+                path: dir_path.clone(),
+                entity_type: EntityType::Directory,
+                start_line: None,
+                end_line: None,
+                properties: {
+                    let mut props = HashMap::new();
+                    props.insert(
+                        "name".to_string(),
+                        std::path::Path::new(&dir_path)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| dir_path.clone()),
+                    );
+                    props
+                },
+                children: None,
+            };
+
+            self.batch_ingest_entities(&[dir_entity]).await?;
+
+            // Create CONTAINS relationship
+            let contains_link = LinkEntity {
+                from_name: dir_id,
+                to_name: file_id,
+                link_type: LinkType::Has,
+            };
+
+            self.batch_create_links(&[contains_link]).await?;
+        }
+
+        info!("Processed file structure for {}", file_path);
+        Ok(())
+    }
+
+    // Process multiple file structures at once
+    pub async fn batch_process_file_structures(&self, structures: &[FileStructure]) -> Result<()> {
+        for structure in structures {
+            self.process_file_structure(structure).await?;
+        }
+
+        info!("Processed {} file structures in batch", structures.len());
+        Ok(())
     }
 }
