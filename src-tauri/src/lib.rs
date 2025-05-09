@@ -4,8 +4,8 @@ mod env_utils;
 mod error;
 mod file_manager;
 mod fs;
-mod models;
-mod parser;
+pub mod models;
+pub mod parser;
 mod treesitter;
 mod ts_queries;
 

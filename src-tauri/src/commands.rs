@@ -1,9 +1,8 @@
 use crate::env_utils;
 use crate::error::Result;
-use crate::file_manager::{file_tracker::FileTracker, neo4j::NeoDB, AppState};
+use crate::file_manager::{neo4j::NeoDB, AppState};
 use crate::parser::Parser;
 
-use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
@@ -34,11 +33,14 @@ pub async fn parse_and_ingest_codebase(app_handle: AppHandle, directory: String)
     app_handle
         .emit(
             "parse_complete",
-            format!("Analysis complete. Processed {} files.", file_count),
+            format!("Analysis complete. Processed {} files.", file_count.0.len()),
         )
         .unwrap();
 
-    Ok(format!("Successfully processed {} files.", file_count))
+    Ok(format!(
+        "Successfully processed {} files.",
+        file_count.0.len()
+    ))
 }
 
 #[tauri::command]
@@ -47,12 +49,6 @@ pub async fn track_repository(path: String, owner_id: String) -> Result<String> 
     let repository_id = Uuid::new_v4().to_string();
 
     // Initialize file tracker
-    let file_tracker = FileTracker::new(
-        PathBuf::from(path.clone()),
-        repository_id.clone(),
-        owner_id.clone(),
-    );
-
     // Initialize environment
     env_utils::init()?;
 

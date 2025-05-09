@@ -1,5 +1,5 @@
 use crate::error::{AppError, Result};
-use crate::models::{CodeEntity, EntityType};
+use crate::models::{CodeItem, EntityType};
 
 use log::info;
 use neo4rs::{query, Graph};
@@ -120,76 +120,21 @@ impl NeoDB {
         Ok(())
     }
 
-    // pub async fn process_changed_files(
-    //     &mut self,
-    //     changed_files: Vec<PathBuf>,
-    //     parser: &CodeParser,
-    // ) -> Result<()> {
-    //     for file_path in changed_files {
-    //         info!("Processing file: {}", file_path.display());
-    //         match parser.parse_file(&file_path).await {
-    //             Ok(ast) => {
-    //                 if let Err(e) = self.update_file_in_graph(&file_path, &ast).await {
-    //                     error!("Failed to update file in graph: {}", e);
-    //                 }
-    //             }
-    //             Err(e) => error!("Failed to parse file {}: {}", file_path.display(), e),
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
-    // async fn update_file_in_graph(&mut self, file_path: &Path, ast: &CodeAst) -> Result<()> {
-    //     // Create the file entity
-    //     let file_entity = CodeEntity {
-    //         name: file_path
-    //             .file_name()
-    //             .unwrap_or_default()
-    //             .to_string_lossy()
-    //             .to_string(),
-    //         path: file_path.to_string_lossy().to_string(),
-    //         entity_type: EntityType::File,
-    //         start_line: None,
-    //         end_line: None,
-    //         properties: HashMap::from([
-    //             ("repositoryId".to_string(), self.repository_id.clone()),
-    //             ("ownerId".to_string(), self.owner_id.clone()),
-    //         ]),
-    //     };
-
-    //     // Ingest the file entity
-    //     self.ingest_entity(&file_entity).await?;
-
-    //     // Process all entities from the AST
-    //     for entity in &ast.entities {
-    //         self.ingest_entity(entity).await?;
-    //     }
-
-    //     Ok(())
-    // }
-
     // Ingest a code entity into Neo4j
-    pub async fn ingest_entity(&self, entity: &CodeEntity) -> Result<()> {
+    pub async fn ingest_entity(&self, entity: &CodeItem) -> Result<()> {
         let label = match entity.entity_type {
+            EntityType::Project => "Project",
             EntityType::File => "File",
             EntityType::Directory => "Directory",
             EntityType::Function => "Function",
             EntityType::Method => "Method",
             EntityType::Class => "Class",
-            EntityType::Struct => "Struct",
             EntityType::Interface => "Interface",
-            EntityType::Trait => "Trait",
-            EntityType::Enum => "Enum",
-            EntityType::Variable => "Variable",
-            EntityType::Parameter => "Parameter",
-            EntityType::CallSite => "CallSite",
             EntityType::Import => "Import",
         };
 
         // Build base properties map
         let mut props_map = HashMap::new();
-        props_map.insert("name".to_string(), entity.name.clone());
         props_map.insert("path".to_string(), entity.path.clone());
 
         // Add line numbers if available
@@ -304,7 +249,7 @@ impl NeoDB {
 
     // Register a repository in Neo4j
     pub async fn register_repository(&self, repo_path: &str) -> Result<()> {
-        use crate::models::{CodeEntity, EntityType};
+        use crate::models::{CodeItem, EntityType};
         use std::collections::HashMap;
         use std::path::Path;
 
@@ -316,8 +261,8 @@ impl NeoDB {
             .to_string();
 
         // Create repository entity
-        let repo_entity = CodeEntity {
-            name: repo_name,
+        let repo_entity = CodeItem {
+            id: repo_path.to_string(),
             path: repo_path.to_string(),
             entity_type: EntityType::Directory,
             start_line: None,
@@ -327,6 +272,7 @@ impl NeoDB {
                 ("ownerId".to_string(), self.owner_id.clone()),
                 ("isRepository".to_string(), "true".to_string()),
             ]),
+            children: Some(Vec::new()),
         };
 
         // Ingest the repository entity

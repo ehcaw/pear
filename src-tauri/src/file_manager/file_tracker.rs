@@ -1,10 +1,10 @@
 use crate::error::Result;
+use blake3::Hash;
 use log::{info, warn};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fs;
-use blake3::Hash;
 
 /// Structure to track files and their metadata
 pub struct FileTracker {
@@ -17,11 +17,7 @@ pub struct FileTracker {
 
 impl FileTracker {
     /// Creates a new file tracker for a repository
-    pub fn new(
-        repository_path: PathBuf,
-        repository_id: String,
-        owner_id: String,
-    ) -> Self {
+    pub fn new(repository_path: PathBuf, repository_id: String, owner_id: String) -> Self {
         FileTracker {
             repository_path,
             repository_id,
@@ -33,20 +29,23 @@ impl FileTracker {
 
     /// Initializes the tracker by scanning the repository
     pub fn initialize(&mut self) -> Result<()> {
-        info!("Initializing file tracker for repository: {}", self.repository_id);
+        info!(
+            "Initializing file tracker for repository: {}",
+            self.repository_id
+        );
         self.scan_repository()?;
         Ok(())
     }
 
     /// Scans the entire repository and builds the initial file index
     fn scan_repository(&mut self) -> Result<()> {
-        // Implementation would walk through the repository and 
+        // Implementation would walk through the repository and
         // compute hashes for all relevant files
         info!("Scanning repository: {}", self.repository_path.display());
-        
+
         // This would be implemented with walkdir or similar
         // For now, we're just stubbing it
-        
+
         Ok(())
     }
 
@@ -58,13 +57,14 @@ impl FileTracker {
                     Some(old_time) => modified_time > *old_time,
                     None => true, // New file
                 };
-                
+
                 if was_updated {
                     info!("Updating file: {}", path.display());
                     // Calculate hash
                     if let Ok(hash) = self.calculate_file_hash(path) {
                         self.file_hashes.insert(path.to_path_buf(), hash);
-                        self.file_timestamps.insert(path.to_path_buf(), modified_time);
+                        self.file_timestamps
+                            .insert(path.to_path_buf(), modified_time);
                         return true;
                     }
                 }
@@ -74,25 +74,29 @@ impl FileTracker {
         }
         false
     }
-    
+
     /// Removes a file from tracking when it's deleted
     pub fn remove_file(&mut self, path: &Path) {
         info!("Removing file from tracking: {}", path.display());
         self.file_hashes.remove(path);
         self.file_timestamps.remove(path);
     }
-    
+
     /// Updates tracking information when a file is renamed
     pub fn rename_file(&mut self, from_path: &Path, to_path: &Path) {
-        info!("Renaming file in tracking from {} to {}", 
-            from_path.display(), to_path.display());
-            
+        info!(
+            "Renaming file in tracking from {} to {}",
+            from_path.display(),
+            to_path.display()
+        );
+
         if let Some(hash) = self.file_hashes.remove(from_path) {
             self.file_hashes.insert(to_path.to_path_buf(), hash);
         }
-        
+
         if let Some(timestamp) = self.file_timestamps.remove(from_path) {
-            self.file_timestamps.insert(to_path.to_path_buf(), timestamp);
+            self.file_timestamps
+                .insert(to_path.to_path_buf(), timestamp);
         }
     }
 
@@ -107,11 +111,11 @@ impl FileTracker {
             let new_hash = self.calculate_file_hash(path)?;
             return Ok(old_hash != &new_hash);
         }
-        
+
         // File not previously tracked
         Ok(true)
     }
-    
+
     /// Gets all tracked files
     pub fn get_tracked_files(&self) -> Vec<PathBuf> {
         self.file_hashes.keys().cloned().collect()

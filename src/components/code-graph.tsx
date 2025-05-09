@@ -280,15 +280,19 @@ export function CodeGraph({ codeGraph, isLoading }: CodeGraphProps) {
 
                 ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
                 ctx.fillRect(
-                  node.x - bckgDimensions[0] / 2,
-                  node.y + 8,
+                  node.x! - bckgDimensions[0] / 2,
+                  node.y! + 8,
                   bckgDimensions[0],
                   bckgDimensions[1],
                 );
 
                 // Text
                 ctx.fillStyle = "#333333";
-                ctx.fillText(label, node.x, node.y + 8 + bckgDimensions[1] / 2);
+                ctx.fillText(
+                  label,
+                  node.x!,
+                  node.y! + 8 + bckgDimensions[1] / 2,
+                );
               }
             }}
             cooldownTicks={100}
