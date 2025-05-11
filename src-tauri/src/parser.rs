@@ -1,47 +1,34 @@
 use crate::error::{AppError, Result};
 use crate::file_manager::neo4j::NeoDB;
-use crate::models::{CodeEntity, EntityType, FileStructure, LinkEntity, LinkType};
+use crate::models::{CodeEntity, CodeLanguage, EntityType, FileStructure, LinkEntity, LinkType};
 use crate::ts_queries;
 use queues::*;
-use serde::Serialize;
-use serde_json::Value;
 use std::fs::{read_to_string, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter};
-use tree_sitter::{Language, Node, Parser as TSParser, Query, QueryCursor};
-use ts_queries::ENTITY_AND_DEP_QUERY;
-use walkdir::WalkDir;
+use tauri::AppHandle;
+use tree_sitter::{Language, Parser as TSParser};
+use ts_queries::{JS_ENTITY_AND_DEP_QUERY, TS_ENTITY_AND_DEP_QUERY};
 
 // Define supported languages
-#[derive(Debug)]
-pub enum CodeLanguage {
-    Rust,
-    JavaScript,
-    TypeScript,
-    Python,
-    Unknown,
-}
 
 impl CodeLanguage {
     fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "rs" => CodeLanguage::Rust,
             "js" => CodeLanguage::JavaScript,
-            "jsx" => CodeLanguage::JavaScript,
+            "jsx" => CodeLanguage::Jsx,
             "ts" => CodeLanguage::TypeScript,
-            "tsx" => CodeLanguage::TypeScript,
-            "py" => CodeLanguage::Python,
+            "tsx" => CodeLanguage::Tsx,
             _ => CodeLanguage::Unknown,
         }
     }
 
     fn get_language(&self) -> Result<Language> {
         match self {
-            CodeLanguage::Rust => Ok(tree_sitter_rust::language()),
             CodeLanguage::JavaScript => Ok(tree_sitter_javascript::language()),
             CodeLanguage::TypeScript => Ok(tree_sitter_typescript::language_typescript()),
-            CodeLanguage::Python => Ok(tree_sitter_python::language()),
+            CodeLanguage::Tsx => Ok(tree_sitter_typescript::language_tsx()),
+            CodeLanguage::Jsx => Ok(tree_sitter_javascript::language()),
             CodeLanguage::Unknown => Err(AppError::UnsupportedLanguage(
                 "Unknown language".to_string(),
             )),
@@ -73,8 +60,6 @@ impl Parser {
 
     pub async fn parse_and_ingest_directory(
         &mut self,
-        app_handle: &AppHandle,
-        neo_db: &NeoDB,
         directory: &str,
     ) -> Result<(Vec<CodeEntity>, Vec<LinkEntity>)> {
         let dir_path = Path::new(directory);
@@ -90,7 +75,8 @@ impl Parser {
         // };
         let mut nodes: Vec<CodeEntity> = Vec::new();
         let mut links: Vec<LinkEntity> = Vec::new();
-        let mut q: Queue<PathBuf> = queue![dir_path.to_path_buf()];
+        let mut q: std::collections::VecDeque<PathBuf> = std::collections::VecDeque::new();
+        q.push_back(dir_path.to_path_buf());
 
         let ignore_dirs = [
             "node_modules",
@@ -114,7 +100,7 @@ impl Parser {
             .build()
             .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty());
 
-        while let Ok(curr_node) = q.remove() {
+        while let Some(curr_node) = q.pop_front() {
             let rel_path = match curr_node.strip_prefix(dir_path) {
                 Ok(rel) => rel,
                 Err(_) => &curr_node,
@@ -134,6 +120,16 @@ impl Parser {
             }
 
             if curr_node.is_dir() {
+                let dir_node = CodeEntity {
+                    id: curr_node.to_string_lossy().to_string(),
+                    entity_type: EntityType::Directory,
+                    start_line: Some(0),
+                    end_line: Some(0),
+                    path: curr_node.to_string_lossy().to_string(),
+                    properties: std::collections::HashMap::new(),
+                    children: Some(Vec::new()),
+                };
+                nodes.push(dir_node);
                 match std::fs::read_dir(&curr_node) {
                     Ok(entries) => {
                         for entry in entries.flatten() {
@@ -163,24 +159,13 @@ impl Parser {
                             }
 
                             // Add the path to the queue (using owned PathBuf)
-                            q.add(entry_path.clone()).unwrap_or_else(|_| None);
-
-                            let dir_node = CodeEntity {
-                                id: path_str.clone().to_string(),
-                                entity_type: EntityType::Directory,
-                                path: path_str.clone().to_string(),
-                                start_line: Some(0),
-                                end_line: Some(0),
-                                properties: std::collections::HashMap::new(),
-                                children: Some(Vec::new()),
-                            };
-                            nodes.push(dir_node);
+                            q.push_back(entry_path.clone());
                             if entry.path().is_file() {
                                 links.push(LinkEntity {
                                     from_name: curr_node.to_string_lossy().to_string(),
                                     to_name: path_str.clone().to_string(),
                                     link_type: LinkType::Owns,
-                                })
+                                });
                             } else {
                                 links.push(LinkEntity {
                                     from_name: curr_node.to_string_lossy().to_string(),
@@ -195,7 +180,7 @@ impl Parser {
                     }
                 }
             } else if curr_node.is_file() {
-                let extension = match dir_path.extension() {
+                let extension = match curr_node.extension() {
                     Some(ext) => {
                         let ext_str = ext.to_string_lossy().to_string();
                         println!("Found file with extension: {}", ext_str);
@@ -208,33 +193,71 @@ impl Parser {
                 };
                 // Determine language
                 let language = CodeLanguage::from_extension(&extension);
-                let file_breakdown = self.parse_file(&dir_path, &language).await.unwrap();
-                let file_node = CodeEntity {
-                    id: curr_node.clone().to_string_lossy().to_string(),
-                    entity_type: EntityType::Project,
-                    path: dir_path.to_string_lossy().to_string(),
-                    start_line: Some(0),
-                    end_line: Some(self.count_lines_in_file(&dir_path).unwrap()),
-                    properties: std::collections::HashMap::new(),
-                    children: Some(file_breakdown),
-                };
-                for child in &file_node.children.clone().unwrap() {
-                    match child.entity_type {
-                        EntityType::Import => links.push(LinkEntity {
-                            from_name: file_node.id.clone(),
-                            to_name: child.id.clone(),
-                            link_type: LinkType::Import,
-                        }),
-                        EntityType::Method => {}
-                        EntityType::Function => {}
-                        EntityType::Class => {}
-                        _ => {}
+                if matches!(language, CodeLanguage::Unknown) {
+                    continue;
+                }
+
+                // for child in &file_node.children.clone().unwrap() {
+                //     match child.entity_type {
+                //         EntityType::Import => links.push(LinkEntity {
+                //             from_name: file_node.id.clone(),
+                //             to_name: child.id.clone(),
+                //             link_type: LinkType::Import,
+                //         }),
+                //         EntityType::Method => {}
+                //         EntityType::Function => {}
+                //         EntityType::Class => {}
+                //         _ => {}
+                //     }
+                // }
+                match self.parse_file(&curr_node, &language).await {
+                    Ok(file_breakdown) => {
+                        let file_node = CodeEntity {
+                            id: curr_node.to_string_lossy().to_string(),
+                            entity_type: EntityType::File,
+                            path: curr_node.to_string_lossy().to_string(),
+                            start_line: Some(0),
+                            end_line: Some(self.count_lines_in_file(&curr_node).unwrap_or(0)),
+                            properties: std::collections::HashMap::new(),
+                            children: Some(file_breakdown),
+                        };
+                        if let Some(children) = &file_node.children {
+                            for child in children {
+                                match child.entity_type {
+                                    EntityType::Import => links.push(LinkEntity {
+                                        from_name: file_node.id.clone(),
+                                        to_name: child.id.clone(),
+                                        link_type: LinkType::Import,
+                                    }),
+                                    EntityType::Method => links.push(LinkEntity {
+                                        from_name: file_node.id.clone(),
+                                        to_name: child.id.clone(),
+                                        link_type: LinkType::Uses,
+                                    }),
+                                    EntityType::Function => links.push(LinkEntity {
+                                        from_name: file_node.id.clone(),
+                                        to_name: child.id.clone(),
+                                        link_type: LinkType::Uses,
+                                    }),
+                                    EntityType::Class => links.push(LinkEntity {
+                                        from_name: file_node.id.clone(),
+                                        to_name: child.id.clone(),
+                                        link_type: LinkType::Owns,
+                                    }),
+                                    _ => {}
+                                }
+                                nodes.push(child.to_owned());
+                            }
+                        }
+                        nodes.push(file_node);
+                    }
+                    Err(e) => {
+                        println!("failed to parse file {}: {:?}", curr_node.display(), e);
                     }
                 }
-                nodes.push(file_node);
             }
         }
-
+        println!("Finished processing");
         Ok((nodes, links))
     }
 
@@ -246,10 +269,12 @@ impl Parser {
         let content = std::fs::read_to_string(path).map_err(|e| AppError::Io(e))?;
         let mut children: Vec<CodeEntity> = Vec::new();
 
+        println!("{}", path.to_string_lossy().to_string());
+
         let lang = language.get_language()?;
         self.ts_parser
             .set_language(lang)
-            .map_err(|e| AppError::TreeSitter((e.to_string())))?;
+            .map_err(|e| AppError::TreeSitter(e.to_string()))?;
 
         let tree = self
             .ts_parser
@@ -258,7 +283,19 @@ impl Parser {
         let root = tree.root_node();
         let source = content.as_bytes();
 
-        let query = tree_sitter::Query::new(lang, ENTITY_AND_DEP_QUERY)
+        let query_str = match language {
+            CodeLanguage::TypeScript => TS_ENTITY_AND_DEP_QUERY,
+            CodeLanguage::JavaScript => JS_ENTITY_AND_DEP_QUERY, // (define this separately)
+            CodeLanguage::Tsx => TS_ENTITY_AND_DEP_QUERY,
+            CodeLanguage::Jsx => JS_ENTITY_AND_DEP_QUERY,
+            _ => {
+                return Err(AppError::UnsupportedLanguage(
+                    "No query defined for this language".to_string(),
+                ));
+            }
+        };
+
+        let query = tree_sitter::Query::new(lang, query_str)
             .map_err(|e| AppError::TreeSitter(e.to_string()))?;
 
         let mut cursor = tree_sitter::QueryCursor::new();
@@ -331,14 +368,6 @@ impl Parser {
             "js" | "jsx" => self
                 .ts_parser
                 .set_language(tree_sitter_javascript::language())
-                .map_err(|e| AppError::TreeSitter(e.to_string()))?,
-            "rs" => self
-                .ts_parser
-                .set_language(tree_sitter_rust::language())
-                .map_err(|e| AppError::TreeSitter(e.to_string()))?,
-            "py" => self
-                .ts_parser
-                .set_language(tree_sitter_python::language())
                 .map_err(|e| AppError::TreeSitter(e.to_string()))?,
             _ => {
                 return Err(AppError::UnsupportedLanguage(format!(
